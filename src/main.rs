@@ -438,9 +438,34 @@ impl Parser {
         Ok(args)
     }
 
+    fn logic_or(&mut self) -> Result<Expr, String> {
+        let mut expr = self.logic_and()?;
+        while let Some(op) = self.match_operator(&["||"]) {
+            let right = self.logic_and()?;
+            expr = Expr::BinaryOp {
+                op,
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+        Ok(expr)
+    }
+
+    fn logic_and(&mut self) -> Result<Expr, String> {
+        let mut expr = self.equality()?;
+        while let Some(op) = self.match_operator(&["&&"]) {
+            let right = self.equality()?;
+            expr = Expr::BinaryOp {
+                op,
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+        Ok(expr)
+    }
 
     fn assignment(&mut self) -> Result<Expr, String> {
-        let expr = self.equality()?;
+        let expr = self.logic_or()?;
         if self.match_token(&Token::Operator("=".to_string())) {
             if let Expr::Variable(name) = expr {
                 let value = self.assignment()?;
@@ -630,5 +655,220 @@ fn main() {
     match parser.parse() {
         Ok(ast) => println!("{:#?}", ast),
         Err(e) => eprintln!("Parse error: {}", e),
+    }
+}
+
+
+// Add this at the bottom of the file
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(input: &str) -> Result<Vec<Stmt>, String> {
+        let mut lexer = Lexer::new(input);
+        let mut tokens = Vec::new();
+        loop {
+            let token = lexer.next_token();
+            if token == Token::EndOfInput {
+                break;
+            }
+            tokens.push(token);
+        }
+        let mut parser = Parser::new(tokens);
+        let ast = parser.parse();
+        if ast.is_err() {
+            eprint!("Parse error: {}", ast.as_ref().err().unwrap());
+        }
+        ast
+    }
+
+    #[test]
+    fn test_class_declaration() {
+        let input = "class MyClass { void myMethod() {} }";
+        assert!(parse(input).is_ok());
+    }
+
+    #[test]
+    fn test_method_declaration() {
+        let input = "class Test {
+            void method1() {}
+            int method2(boolean p1, String p2) { return 0; }
+        }";
+        assert!(parse(input).is_ok());
+    }
+
+    #[test]
+    fn test_variable_declaration() {
+        let input = r#"
+            int x;
+            String s = "hello";
+            boolean flag = true;
+        "#;
+        assert!(parse(input).is_ok());
+    }
+
+    #[test]
+    fn test_assignment() {
+        let input = "x = 42;";
+        assert!(parse(input).is_ok());
+    }
+
+    #[test]
+    fn test_if_statement() {
+        let input = r#"
+            if (x > 0) {
+                print("Positive");
+            } else {
+                print("Non-positive");
+            }
+        "#;
+        assert!(parse(input).is_ok());
+    }
+
+    #[test]
+    fn test_while_loop() {
+        let input = "while (i < 10) { i = i + 1; }";
+        assert!(parse(input).is_ok());
+    }
+
+    #[test]
+    fn test_print_statement() {
+        let input = r#"print("Hello, world!");"#;
+        assert!(parse(input).is_ok());
+    }
+
+    #[test]
+    fn test_return_statement() {
+        let input = "return 42;";
+        assert!(parse(input).is_ok());
+        
+        let input2 = "return;";
+        assert!(parse(input2).is_ok());
+    }
+
+    #[test]
+    fn test_expression_parsing() {
+        let inputs = [
+            "1 + 2 * 3;",
+            "(1 + 2) * 3;",
+            "a == b && c != d;",
+            "!flag || (x <= 0 && y >= 10);",
+            "obj.method();",
+            //"this.field;",
+        ];
+        
+        for input in inputs {
+            assert!(parse(input).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_method_call() {
+        let input = "this.doSomething(1, 2, 3);";
+        assert!(parse(input).is_ok());
+    }
+
+    #[test]
+    fn test_this_keyword() {
+        let input = "return this;";
+        assert!(parse(input).is_ok());
+    }
+
+    #[test]
+    fn test_nested_blocks() {
+        let input = r#"
+            {
+                int x = 5;
+                {
+                    int y = 10;
+                    x = x + y;
+                }
+            }
+        "#;
+        assert!(parse(input).is_ok());
+    }
+
+    #[test]
+    fn test_complex_program() {
+        let input = r#"
+            class Program {
+                void main() {
+                    int x = 10;
+                    if (x > 0) {
+                        while (x > 0) {
+                            print(x);
+                            x = x - 1;
+                        }
+                    }
+                    return;
+                }
+            }
+        "#;
+        assert!(parse(input).is_ok());
+    }
+
+    #[test]
+    fn test_missing_semicolon() {
+        let input = "int x";
+        let result = parse(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Expected ';'"));
+    }
+
+    #[test]
+    fn test_missing_class_name() {
+        let input = "class { void method() {} }";
+        let result = parse(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Expected class name"));
+    }
+
+    #[test]
+    fn test_invalid_assignment() {
+        let input = "42 = x;";
+        let result = parse(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid assignment target"));
+    }
+
+    #[test]
+    fn test_missing_parenthesis() {
+        let input = "if (x { }";
+        let result = parse(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Expected ')'"));
+    }
+
+    #[test]
+    fn test_missing_brace() {
+        let input = "class MyClass { void method() ";
+        let result = parse(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Expected '{'"));
+    }
+
+    #[test]
+    fn test_unexpected_token() {
+        let input = "int 42;";
+        let result = parse(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Expected identifier"));
+    }
+
+    #[test]
+    fn test_method_call_missing_paren() {
+        let input = "obj.method(1, 2;";
+        let result = parse(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Expected ')'"));
+    }
+
+    #[test]
+    fn test_field_access_not_supported() {
+        let input = "this.field;";
+        let result = parse(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Field access not supported"));
     }
 }
