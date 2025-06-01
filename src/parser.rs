@@ -56,6 +56,11 @@ pub enum Stmt {
         name: String,
         init: Option<Expr>,
     },
+    FieldDecl {
+        var_type: String,
+        name: String,
+        init: Option<Expr>,
+    },
     Assignment {
         name: String,
         value: Expr,
@@ -74,6 +79,7 @@ pub enum Stmt {
     Print(Expr),
     ClassDecl {
         name: String,
+        fields: Vec<Stmt>,  // For field declarations
         methods: Vec<Stmt>,
     },
     MethodDecl {
@@ -265,13 +271,23 @@ impl Parser {
         };
         self.consume(&Token::Delimiter('{'), "Expected '{' before class body")?;
         
+        let mut fields = Vec::new();
         let mut methods = Vec::new();
         while !self.check(&Token::Delimiter('}')) && !self.is_at_end() {
-            methods.push(self.method_decl()?);
+            match self.peek() {
+                Some(Token::Keyword(kw)) => {
+                    match kw.as_str() {
+                        "void" => methods.push(self.method_decl()?),
+                        "int" | "boolean" | "String" => fields.push(self.field_decl()?),
+                        _ => return Err("Expected field type or method declaration".to_string()),
+                    }
+                }
+                _ => return Err("Expected field type or method declaration".to_string()),
+            }
         }
         
         self.consume(&Token::Delimiter('}'), "Expected '}' after class body")?;
-        Ok(Stmt::ClassDecl { name, methods })
+        Ok(Stmt::ClassDecl { name, fields, methods })
     }
 
     fn method_decl(&mut self) -> Result<Stmt, String> {
@@ -604,6 +620,27 @@ impl Parser {
             }
         }
         Ok(args)
+    }
+
+    fn field_decl(&mut self) -> Result<Stmt, String> {
+        let var_type = match self.advance() {
+            Some(Token::Keyword(s)) => s,
+            _ => return Err("Expected type keyword".to_string()),
+        };
+
+        let name = match self.advance() {
+            Some(Token::Identifier(s)) => s,
+            _ => return Err("Expected identifier".to_string()),
+        };
+
+        let init = if self.match_token(&Token::Operator("=".to_string())) {
+            Some(self.expression()?)
+        } else {
+            None
+        };
+
+        self.consume(&Token::Delimiter(';'), "Expected ';' after field declaration")?;
+        Ok(Stmt::FieldDecl { var_type, name, init })
     }
 
     // Helper methods
@@ -951,5 +988,37 @@ mod tests {
         let result = parse(input);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Expected '(' after class name"));
+    }
+
+    #[test]
+    fn test_class_with_fields() {
+        let inputs = [
+            "class Point { int x; int y; }",
+            "class Person { String name; int age = 0; }",
+            r#"class Student {
+                String name;
+                int grade = 0;
+                void study() {
+                    grade = grade + 1;
+                }
+            }"#,
+            r#"class Complex {
+                int real = 0;
+                int imag = 0;
+                void add(Complex other) {
+                    this.real = this.real + other.real;
+                    this.imag = this.imag + other.imag;
+                }
+            }"#
+        ];
+        
+        for input in inputs {
+            let result = parse(input);
+            if let Err(ref e) = result {
+                eprintln!("Failed to parse: {}", input);
+                eprintln!("Error: {}", e);
+            }
+            assert!(result.is_ok());
+        }
     }
 }
