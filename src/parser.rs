@@ -275,13 +275,8 @@ impl Parser {
         let mut methods = Vec::new();
         while !self.check(&Token::Delimiter('}')) && !self.is_at_end() {
             match self.peek() {
-                Some(Token::Keyword(kw)) => {
-                    match kw.as_str() {
-                        "void" => methods.push(self.method_decl()?),
-                        "int" | "boolean" | "String" => fields.push(self.field_decl()?),
-                        _ => return Err("Expected field type or method declaration".to_string()),
-                    }
-                }
+                Some(Token::Keyword(kw)) if kw == "void" => methods.push(self.method_decl()?),
+                Some(Token::Keyword(_)) | Some(Token::Identifier(_)) => fields.push(self.field_decl()?),
                 _ => return Err("Expected field type or method declaration".to_string()),
             }
         }
@@ -309,7 +304,7 @@ impl Parser {
         if !self.check(&Token::Delimiter(')')) {
             loop {
                 let param_type = match self.advance() {
-                    Some(Token::Keyword(kw)) => kw,
+                    Some(Token::Keyword(kw)) | Some(Token::Identifier(kw)) => kw,
                     _ => return Err("Expected parameter type".to_string()),
                 };
                 let param_name = match self.advance() {
@@ -624,8 +619,8 @@ impl Parser {
 
     fn field_decl(&mut self) -> Result<Stmt, String> {
         let var_type = match self.advance() {
-            Some(Token::Keyword(s)) => s,
-            _ => return Err("Expected type keyword".to_string()),
+            Some(Token::Keyword(s)) | Some(Token::Identifier(s)) => s,
+            _ => return Err("Expected type".to_string()),
         };
 
         let name = match self.advance() {
