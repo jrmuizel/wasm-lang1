@@ -13,6 +13,7 @@ enum Token {
     Delimiter(char),       // e.g., '(', ';'
     Dot,                  // '.' for field/method access
     This,                 // 'this' keyword
+    New,                  // 'new' keyword
     EndOfInput,
 }
 
@@ -37,7 +38,15 @@ enum Expr {
         method: String,
         args: Vec<Expr>,
     },
+    FieldAccess {
+        object: Box<Expr>,
+        field: String,
+    },
     This,
+    New {
+        class_name: String,
+        args: Vec<Expr>,
+    },
 }
 
 #[derive(Debug)]
@@ -120,6 +129,7 @@ impl<'a> Lexer<'a> {
                         "true" => Token::LiteralBool(true),
                         "false" => Token::LiteralBool(false),
                         "this" => Token::This,
+                        "new" => Token::New,
                         "class" | "void" | "return" => Token::Keyword(ident),
                         _ => Token::Identifier(ident.clone()),
                     }
@@ -422,8 +432,10 @@ impl Parser {
                         args,
                     };
                 } else {
-                    // Field access not implemented in this patch
-                    return Err("Field access not supported".to_string());
+                    expr = Expr::FieldAccess {
+                        object: Box::new(expr),
+                        field: method_or_field,
+                    };
                 }
             } else {
                 break;
@@ -550,6 +562,16 @@ impl Parser {
             Some(Token::LiteralBool(b)) => Ok(Expr::LiteralBool(b)),
             Some(Token::LiteralString(s)) => Ok(Expr::LiteralString(s)),
             Some(Token::This) => Ok(Expr::This),
+            Some(Token::New) => {
+                let class_name = match self.advance() {
+                    Some(Token::Identifier(name)) => name,
+                    _ => return Err("Expected class name after 'new'".to_string()),
+                };
+                self.consume(&Token::Delimiter('('), "Expected '(' after class name")?;
+                let args = self.parse_arguments()?;
+                self.consume(&Token::Delimiter(')'), "Expected ')' after arguments")?;
+                Ok(Expr::New { class_name, args })
+            }
             Some(Token::Identifier(name)) => Ok(Expr::Variable(name)),
             Some(Token::Delimiter('(')) => {
                 let expr = self.expression()?;
@@ -755,7 +777,21 @@ mod tests {
             "a == b && c != d;",
             "!flag || (x <= 0 && y >= 10);",
             "obj.method();",
-            //"this.field;",
+            "this.field;",
+        ];
+        
+        for input in inputs {
+            assert!(parse(input).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_field_access() {
+        let inputs = [
+            "this.field;",
+            "obj.x;",
+            "this.field.nested;",
+            "obj.field1.field2;",
         ];
         
         for input in inputs {
@@ -865,10 +901,24 @@ mod tests {
     }
 
     #[test]
-    fn test_field_access_not_supported() {
-        let input = "this.field;";
+    fn test_new_expression() {
+        let input = "x = new MyClass(1, 2, 3);";
+        assert!(parse(input).is_ok());
+    }
+
+    #[test]
+    fn test_new_missing_class_name() {
+        let input = "x = new;";
         let result = parse(input);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Field access not supported"));
+        assert!(result.unwrap_err().contains("Expected class name after 'new'"));
+    }
+
+    #[test]
+    fn test_new_missing_parentheses() {
+        let input = "x = new MyClass;";
+        let result = parse(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Expected '(' after class name"));
     }
 }
