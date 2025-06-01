@@ -74,11 +74,11 @@ impl<'a> Lexer<'a> {
         
         match self.chars.peek() {
             Some(&c) => match c {
-                '(' | ')' | '{' | '}' | ';' | '=' | ',' => {
+                '(' | ')' | '{' | '}' | ';' | ',' => {
                     self.chars.next();
                     Token::Delimiter(c)
                 }
-                '+' | '-' | '*' | '/' | '!' | '&' | '|' | '<' | '>' => {
+                '+' | '-' | '*' | '/' | '!' | '&' | '|' | '<' | '>' | '=' => {
                     let op = self.read_operator();
                     Token::Operator(op)
                 }
