@@ -678,7 +678,7 @@ mod tests {
         let mut parser = Parser::new(tokens);
         let ast = parser.parse();
         if ast.is_err() {
-            eprint!("Parse error: {}", ast.as_ref().err().unwrap());
+            eprintln!("Parse error: {}", ast.as_ref().err().unwrap());
         }
         ast
     }
