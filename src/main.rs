@@ -114,7 +114,7 @@ impl<'a> Lexer<'a> {
                 _ if c.is_alphabetic() => {
                     let ident = self.read_identifier();
                     match ident.as_str() {
-                        "int" | "boolean" | "String" | "if" | "else" | "while" | "print" | "true" | "false" => {
+                        "int" | "boolean" | "String" | "if" | "else" | "while" | "print" => {
                             Token::Keyword(ident)
                         }
                         "true" => Token::LiteralBool(true),
