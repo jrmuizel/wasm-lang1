@@ -11,6 +11,8 @@ enum Token {
     LiteralString(String), // e.g., "hello"
     Operator(String),      // e.g., "+", "="
     Delimiter(char),       // e.g., '(', ';'
+    Dot,                  // '.' for field/method access
+    This,                 // 'this' keyword
     EndOfInput,
 }
 
@@ -30,6 +32,12 @@ enum Expr {
     LiteralInt(i32),
     LiteralBool(bool),
     LiteralString(String),
+    MethodCall {
+        object: Box<Expr>,
+        method: String,
+        args: Vec<Expr>,
+    },
+    This,
 }
 
 #[derive(Debug)]
@@ -55,6 +63,19 @@ enum Stmt {
     Block(Vec<Stmt>),
     Expression(Expr),
     Print(Expr),
+    ClassDecl {
+        name: String,
+        methods: Vec<Stmt>,
+    },
+    MethodDecl {
+        name: String,
+        return_type: String,
+        params: Vec<(String, String)>,
+        body: Box<Stmt>,
+    },
+    Return {
+        value: Option<Expr>,
+    },
 }
 
 // Lexer implementation
@@ -74,7 +95,10 @@ impl<'a> Lexer<'a> {
         
         match self.chars.peek() {
             Some(&c) => match c {
-                '(' | ')' | '{' | '}' | ';' | ',' => {
+                '(' | ')' | '{' | '}' | ';' | ',' | '.' => {
+                    if c == '.' {
+                        return self.handle_dot();
+                    }
                     self.chars.next();
                     Token::Delimiter(c)
                 }
@@ -95,7 +119,9 @@ impl<'a> Lexer<'a> {
                         }
                         "true" => Token::LiteralBool(true),
                         "false" => Token::LiteralBool(false),
-                        _ => Token::Identifier(ident),
+                        "this" => Token::This,
+                        "class" | "void" | "return" => Token::Keyword(ident),
+                        _ => Token::Identifier(ident.clone()),
                     }
                 }
                 _ if c.is_digit(10) => {
@@ -108,6 +134,14 @@ impl<'a> Lexer<'a> {
             },
             None => Token::EndOfInput,
         }
+    }
+   
+    fn handle_dot(&mut self) -> Token {
+        self.chars.next(); // Consume '.'
+        if self.chars.peek() == Some(&'.') {
+            panic!("Double dot not supported");
+        }
+        Token::Dot
     }
 
     fn read_identifier(&mut self) -> String {
@@ -200,6 +234,8 @@ impl Parser {
     fn statement(&mut self) -> Result<Stmt, String> {
         match self.peek() {
             Some(Token::Keyword(kw)) => match kw.as_str() {
+                "class" => self.class_decl(),
+                "return" => self.return_statement(),
                 "int" | "boolean" | "String" => self.variable_decl(),
                 "if" => self.if_statement(),
                 "while" => self.while_statement(),
@@ -210,6 +246,81 @@ impl Parser {
             _ => self.expression_statement(),
         }
     }
+
+    fn class_decl(&mut self) -> Result<Stmt, String> {
+        self.consume(&Token::Keyword("class".to_string()), "Expected 'class'")?;
+        let name = match self.advance() {
+            Some(Token::Identifier(name)) => name,
+            _ => return Err("Expected class name".to_string()),
+        };
+        self.consume(&Token::Delimiter('{'), "Expected '{' before class body")?;
+        
+        let mut methods = Vec::new();
+        while !self.check(&Token::Delimiter('}')) && !self.is_at_end() {
+            methods.push(self.method_decl()?);
+        }
+        
+        self.consume(&Token::Delimiter('}'), "Expected '}' after class body")?;
+        Ok(Stmt::ClassDecl { name, methods })
+    }
+
+    fn method_decl(&mut self) -> Result<Stmt, String> {
+        // Parse return type
+        let return_type = match self.advance() {
+            Some(Token::Keyword(kw)) => kw,
+            _ => return Err("Expected return type".to_string()),
+        };
+
+        // Parse method name
+        let name = match self.advance() {
+            Some(Token::Identifier(name)) => name,
+            _ => return Err("Expected method name".to_string()),
+        };
+
+        // Parse parameters
+        self.consume(&Token::Delimiter('('), "Expected '(' after method name")?;
+        let mut params = Vec::new();
+        if !self.check(&Token::Delimiter(')')) {
+            loop {
+                let param_type = match self.advance() {
+                    Some(Token::Keyword(kw)) => kw,
+                    _ => return Err("Expected parameter type".to_string()),
+                };
+                let param_name = match self.advance() {
+                    Some(Token::Identifier(name)) => name,
+                    _ => return Err("Expected parameter name".to_string()),
+                };
+                params.push((param_type, param_name));
+                
+                if !self.match_token(&Token::Delimiter(',')) {
+                    break;
+                }
+            }
+        }
+        self.consume(&Token::Delimiter(')'), "Expected ')' after parameters")?;
+
+        // Parse method body
+        let body = self.block()?;
+        
+        Ok(Stmt::MethodDecl {
+            name,
+            return_type,
+            params,
+            body: Box::new(body),
+        })
+    }
+
+    fn return_statement(&mut self) -> Result<Stmt, String> {
+        self.consume(&Token::Keyword("return".to_string()), "Expected 'return'")?;
+        let value = if !self.check(&Token::Delimiter(';')) {
+            Some(self.expression()?)
+        } else {
+            None
+        };
+        self.consume(&Token::Delimiter(';'), "Expected ';' after return")?;
+        Ok(Stmt::Return { value })
+    }
+
 
     fn variable_decl(&mut self) -> Result<Stmt, String> {
         let var_type = match self.advance() {
@@ -292,6 +403,42 @@ impl Parser {
         self.assignment()
     }
 
+    fn postfix(&mut self) -> Result<Expr, String> {
+        let mut expr = self.primary()?;
+        
+        loop {
+            if self.match_token(&Token::Dot) {
+                let method_or_field = match self.advance() {
+                    Some(Token::Identifier(name)) => name,
+                    _ => return Err("Expected identifier after '.'".to_string()),
+                };
+                
+                if self.match_token(&Token::Delimiter('(')) {
+                    let args = self.parse_arguments()?;
+                    self.consume(&Token::Delimiter(')'), "Expected ')' after method arguments")?;
+                    expr = Expr::MethodCall {
+                        object: Box::new(expr),
+                        method: method_or_field,
+                        args,
+                    };
+                } else {
+                    // Field access not implemented in this patch
+                    return Err("Field access not supported".to_string());
+                }
+            } else {
+                break;
+            }
+        }
+        
+        Ok(expr)
+    }
+    
+    fn parse_arguments(&mut self) -> Result<Vec<Expr>, String> {
+        let args = self.parse_argument_list()?;
+        Ok(args)
+    }
+
+
     fn assignment(&mut self) -> Result<Expr, String> {
         let expr = self.equality()?;
         if self.match_token(&Token::Operator("=".to_string())) {
@@ -369,7 +516,7 @@ impl Parser {
                 operand: Box::new(operand),
             });
         }
-        self.primary()
+        self.postfix()
     }
 
     fn primary(&mut self) -> Result<Expr, String> {
@@ -377,6 +524,7 @@ impl Parser {
             Some(Token::LiteralInt(n)) => Ok(Expr::LiteralInt(n)),
             Some(Token::LiteralBool(b)) => Ok(Expr::LiteralBool(b)),
             Some(Token::LiteralString(s)) => Ok(Expr::LiteralString(s)),
+            Some(Token::This) => Ok(Expr::This),
             Some(Token::Identifier(name)) => Ok(Expr::Variable(name)),
             Some(Token::Delimiter('(')) => {
                 let expr = self.expression()?;
@@ -385,6 +533,20 @@ impl Parser {
             }
             _ => Err("Expected expression".to_string()),
         }
+    }
+
+    
+    fn parse_argument_list(&mut self) -> Result<Vec<Expr>, String> {
+        let mut args = Vec::new();
+        if !self.check(&Token::Delimiter(')')) {
+            loop {
+                args.push(self.expression()?);
+                if !self.match_token(&Token::Delimiter(',')) {
+                    break;
+                }
+            }
+        }
+        Ok(args)
     }
 
     // Helper methods
@@ -438,6 +600,12 @@ impl Parser {
 
 fn main() {
     let input = r#"
+        class MyClass {
+            void myMethod(int param) {
+                return this.otherMethod(param);
+            }
+        }
+
         int x = 5;
         if (x > 0) {
             print("Positive");
