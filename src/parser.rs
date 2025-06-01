@@ -274,10 +274,23 @@ impl Parser {
         let mut fields = Vec::new();
         let mut methods = Vec::new();
         while !self.check(&Token::Delimiter('}')) && !self.is_at_end() {
-            match self.peek() {
-                Some(Token::Keyword(kw)) if kw == "void" => methods.push(self.method_decl()?),
-                Some(Token::Keyword(_)) | Some(Token::Identifier(_)) => fields.push(self.field_decl()?),
-                _ => return Err("Expected field type or method declaration".to_string()),
+            // Look ahead two tokens to see if there's a '(' after the identifier
+            // This distinguishes between method declarations and field declarations
+            let is_method = match (self.peek(), self.peek_next()) {
+                (Some(Token::Keyword(_)) | Some(Token::Identifier(_)), Some(Token::Identifier(_))) => {
+                    // Look one more ahead for a '('
+                    match self.peek_n(2) {
+                        Some(Token::Delimiter('(')) => true,
+                        _ => false,
+                    }
+                }
+                _ => false,
+            };
+
+            if is_method {
+                methods.push(self.method_decl()?);
+            } else {
+                fields.push(self.field_decl()?);
             }
         }
         
@@ -684,6 +697,16 @@ impl Parser {
 
     fn is_at_end(&self) -> bool {
         matches!(self.peek(), Some(Token::EndOfInput) | None)
+    }
+
+    // Add helper method to peek n tokens ahead
+    fn peek_n(&self, n: usize) -> Option<Token> {
+        self.tokens.get(self.current + n).cloned()
+    }
+
+    // Add helper method to peek next token
+    fn peek_next(&self) -> Option<Token> {
+        self.peek_n(1)
     }
 }
 
