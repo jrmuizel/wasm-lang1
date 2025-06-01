@@ -479,18 +479,28 @@ impl Parser {
     fn assignment(&mut self) -> Result<Expr, String> {
         let expr = self.logic_or()?;
         if self.match_token(&Token::Operator("=".to_string())) {
-            if let Expr::Variable(name) = expr {
-                let value = self.assignment()?;
-                return Ok(Expr::BinaryOp {
-                    op: "=".to_string(),
-                    left: Box::new(Expr::Variable(name)),
-                    right: Box::new(value),
-                });
-            } else {
-                return Err("Invalid assignment target".to_string());
+            match expr {
+                Expr::Variable(name) => {
+                    let value = self.assignment()?;
+                    Ok(Expr::BinaryOp {
+                        op: "=".to_string(),
+                        left: Box::new(Expr::Variable(name)),
+                        right: Box::new(value),
+                    })
+                }
+                Expr::FieldAccess { object, field } => {
+                    let value = self.assignment()?;
+                    Ok(Expr::BinaryOp {
+                        op: "=".to_string(),
+                        left: Box::new(Expr::FieldAccess { object, field }),
+                        right: Box::new(value),
+                    })
+                }
+                _ => Err("Invalid assignment target".to_string()),
             }
+        } else {
+            Ok(expr)
         }
-        Ok(expr)
     }
 
     fn equality(&mut self) -> Result<Expr, String> {
@@ -796,6 +806,27 @@ mod tests {
         
         for input in inputs {
             assert!(parse(input).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_field_assignment() {
+        let inputs = [
+            "this.field = 1;",
+            "obj.x = 42;",
+            "this.field = other.field;",
+            "obj.field1.field2 = value;",
+            "this.field = new MyClass();",
+            "obj.field = this.method();",
+        ];
+        
+        for input in inputs {
+            let result = parse(input);
+            if let Err(ref e) = result {
+                eprintln!("Failed to parse: {}", input);
+                eprintln!("Error: {}", e);
+            }
+            assert!(result.is_ok());
         }
     }
 
