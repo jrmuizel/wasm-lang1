@@ -33,7 +33,12 @@ fn main() {
     // Parse tokens
     let mut parser = Parser::new(tokens);
     match parser.parse() {
-        Ok(ast) => println!("{:#?}", ast),
+        Ok(ast) => {
+            println!("{:#?}", ast);
+            let mut codegen = codegen::CodeGenerator::new();
+            let wasm_code = codegen.generate(ast);
+            println!("{}", wasm_code);
+        }
         Err(e) => eprintln!("Parse error: {}", e),
     }
 }
