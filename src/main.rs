@@ -1,4 +1,5 @@
 mod parser;
+mod codegen;
 
 use parser::{Lexer, Parser, Token};
 

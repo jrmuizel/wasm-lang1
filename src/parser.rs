@@ -18,7 +18,7 @@ pub enum Token {
 }
 
 // AST Node definitions
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr {
     BinaryOp {
         op: String,
@@ -49,7 +49,7 @@ pub enum Expr {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Stmt {
     VariableDecl {
         var_type: String,
