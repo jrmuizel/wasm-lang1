@@ -61,6 +61,12 @@ pub enum Stmt {
         name: String,
         init: Option<Expr>,
     },
+    FunctionDecl {
+        name: String,
+        return_type: String,
+        params: Vec<(String, String)>,
+        body: Box<Stmt>,
+    },
     Assignment {
         name: String,
         value: Expr,
@@ -252,7 +258,18 @@ impl Parser {
             Some(Token::Keyword(kw)) => match kw.as_str() {
                 "class" => self.class_decl(),
                 "return" => self.return_statement(),
-                "int" | "boolean" | "String" => self.variable_decl(),
+                "int" | "boolean" | "String" | "void" => {
+                    // Look ahead to see if this is a function declaration
+                    let is_function = match (self.peek_next(), self.peek_n(2)) {
+                        (Some(Token::Identifier(_)), Some(Token::Delimiter('('))) => true,
+                        _ => false,
+                    };
+                    if is_function {
+                        self.function_decl()
+                    } else {
+                        self.variable_decl()
+                    }
+                }
                 "if" => self.if_statement(),
                 "while" => self.while_statement(),
                 "print" => self.print_statement(),
@@ -651,6 +668,52 @@ impl Parser {
         Ok(Stmt::FieldDecl { var_type, name, init })
     }
 
+    fn function_decl(&mut self) -> Result<Stmt, String> {
+        // Parse return type
+        let return_type = match self.advance() {
+            Some(Token::Keyword(kw)) | Some(Token::Identifier(kw)) => kw,
+            _ => return Err("Expected return type".to_string()),
+        };
+
+        // Parse function name
+        let name = match self.advance() {
+            Some(Token::Identifier(name)) => name,
+            _ => return Err("Expected function name".to_string()),
+        };
+
+        // Parse parameters
+        self.consume(&Token::Delimiter('('), "Expected '(' after function name")?;
+        let mut params = Vec::new();
+        if !self.check(&Token::Delimiter(')')) {
+            loop {
+                let param_type = match self.advance() {
+                    Some(Token::Keyword(kw)) | Some(Token::Identifier(kw)) => kw,
+                    _ => return Err("Expected parameter type".to_string()),
+                };
+                let param_name = match self.advance() {
+                    Some(Token::Identifier(name)) => name,
+                    _ => return Err("Expected parameter name".to_string()),
+                };
+                params.push((param_type, param_name));
+                
+                if !self.match_token(&Token::Delimiter(',')) {
+                    break;
+                }
+            }
+        }
+        self.consume(&Token::Delimiter(')'), "Expected ')' after parameters")?;
+
+        // Parse function body
+        let body = self.block()?;
+        
+        Ok(Stmt::FunctionDecl {
+            name,
+            return_type,
+            params,
+            body: Box::new(body),
+        })
+    }
+
     // Helper methods
     fn advance(&mut self) -> Option<Token> {
         if !self.is_at_end() {
@@ -1027,6 +1090,37 @@ mod tests {
                     this.real = this.real + other.real;
                     this.imag = this.imag + other.imag;
                 }
+            }"#
+        ];
+        
+        for input in inputs {
+            let result = parse(input);
+            if let Err(ref e) = result {
+                eprintln!("Failed to parse: {}", input);
+                eprintln!("Error: {}", e);
+            }
+            assert!(result.is_ok());
+        }
+    }
+
+    #[test]
+    fn test_function_declaration() {
+        let inputs = [
+            "void main() { }",
+            "int add(int a, int b) { return a + b; }",
+            "String greet(String name) { return \"Hello \" + name; }",
+            r#"void printNumbers(int n) {
+                int i = 0;
+                while (i < n) {
+                    print(i);
+                    i = i + 1;
+                }
+            }"#,
+            r#"Complex addComplex(Complex a, Complex b) {
+                Complex result = new Complex();
+                result.real = a.real + b.real;
+                result.imag = a.imag + b.imag;
+                return result;
             }"#
         ];
         
