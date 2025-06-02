@@ -275,8 +275,23 @@ impl Parser {
                 "print" => self.print_statement(),
                 _ => self.expression_statement(),
             },
+            Some(Token::Identifier(_)) => {
+                // Look ahead to see if this is a declaration or expression
+                match (self.peek_next(), self.peek_n(2)) {
+                    // Function declaration: Type Name (
+                    (Some(Token::Identifier(_)), Some(Token::Delimiter('('))) => self.function_decl(),
+                    // Variable declaration: Type Name [= or ;]
+                    (Some(Token::Identifier(_)), Some(Token::Operator(ref op))) if op == "=" => self.variable_decl(),
+                    (Some(Token::Identifier(_)), Some(Token::Delimiter(';'))) => self.variable_decl(),
+                    // Expression statement
+                    _ => self.expression_statement(),
+                }
+            },
             Some(Token::Delimiter('{')) => self.block(),
-            _ => self.expression_statement(),
+            Some(Token::This) | Some(Token::LiteralInt(_)) | 
+            Some(Token::LiteralBool(_)) | Some(Token::LiteralString(_)) |
+            Some(Token::New) | Some(Token::Delimiter('(')) => self.expression_statement(),
+            _ => self.expression_statement(), // Changed from Err to allow any expression
         }
     }
 
@@ -375,8 +390,8 @@ impl Parser {
 
     fn variable_decl(&mut self) -> Result<Stmt, String> {
         let var_type = match self.advance() {
-            Some(Token::Keyword(s)) => s,
-            _ => return Err("Expected type keyword".to_string()),
+            Some(Token::Keyword(s)) | Some(Token::Identifier(s)) => s,
+            _ => return Err("Expected type".to_string()),
         };
 
         let name = match self.advance() {
