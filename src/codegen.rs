@@ -86,7 +86,6 @@ impl CodeGenerator {
 
         // Generate main function if present
         if let Some(main) = self.find_main(&stmts) {
-            self.generate_function("main", "void", &vec![], &main, true);
             self.emit_line("(export \"main\" (func $main))");
         }
 
