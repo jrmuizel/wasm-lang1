@@ -136,10 +136,10 @@ impl CodeGenerator {
     ) {
         self.emit(&format!("(func ${}.{}", class_name, method_name));
         self.emit(&format!(" (param $this (ref ${}))", class_name));
-        for (i, (_, param_type)) in params.iter().enumerate() {
+        for (i, (param_type, param_name)) in params.iter().enumerate() {
             self.emit(&format!(
                 " (param ${} {})",
-                i,
+                param_name,
                 self.type_to_wasm(param_type)
             ));
         }
@@ -178,16 +178,18 @@ impl CodeGenerator {
             }
             Stmt::If { condition, then_block, else_block } => {
                 let cond = self.generate_expr(condition);
-                self.emit(&format!("(if {}\n", cond));
+                self.emit(&format!("(if ({})\n", cond));
                 self.indent_level += 1;
                 self.emit_line("(then");
                 self.generate_stmt(then_block);
+                self.emit_line(")");
                 if let Some(else_block) = else_block {
                     self.emit_line("(else");
                     self.generate_stmt(else_block);
+                    self.emit_line(")");
                 }
-                self.emit_line(")");
                 self.indent_level -= 1;
+                self.emit_line(")");
             }
             Stmt::While { condition, body } => {
                 self.emit_line("(block");
