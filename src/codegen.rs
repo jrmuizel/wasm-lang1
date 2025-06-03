@@ -105,21 +105,27 @@ impl CodeGenerator {
         is_main: bool,
     ) {
         self.emit(&format!("(func ${}", name));
-        let mut locals = HashSet::new();
+        let mut locals_set = std::collections::HashSet::new();
         for (param_type, param_name) in params.iter() {
             self.emit(&format!(
                 " (param ${} {})",
                 param_name,
                 self.type_to_wasm(param_type)
             ));
-            locals.insert(param_name.clone());
+            locals_set.insert(param_name.clone());
         }
         self.emit(&format!(
             " (result {})\n",
             self.type_to_wasm(return_type)
         ));
+        // Emit local variable declarations
+        let locals = self.collect_locals(body, &locals_set);
+        for (name, var_type) in &locals {
+            self.emit(&format!(" (local ${} {})", name, self.type_to_wasm(var_type)));
+            locals_set.insert(name.clone());
+        }
         self.indent_level += 1;
-        self.local_vars_stack.push(locals);
+        self.local_vars_stack.push(locals_set);
         self.generate_stmt(body);
         if return_type == "void" {
             self.emit_line("return");
@@ -139,22 +145,28 @@ impl CodeGenerator {
     ) {
         self.emit(&format!("(func ${}.{}", class_name, method_name));
         self.emit(&format!(" (param $this (ref ${}))", class_name));
-        let mut locals = HashSet::new();
-        locals.insert("this".to_string());
+        let mut locals_set = std::collections::HashSet::new();
+        locals_set.insert("this".to_string());
         for (param_type, param_name) in params.iter() {
             self.emit(&format!(
                 " (param ${} {})",
                 param_name,
                 self.type_to_wasm(param_type)
             ));
-            locals.insert(param_name.clone());
+            locals_set.insert(param_name.clone());
         }
         self.emit(&format!(
             " (result {})\n",
             self.type_to_wasm(return_type)
         ));
+        // Emit local variable declarations
+        let locals = self.collect_locals(body, &locals_set);
+        for (name, var_type) in &locals {
+            self.emit(&format!(" (local ${} {})", name, self.type_to_wasm(var_type)));
+            locals_set.insert(name.clone());
+        }
         self.indent_level += 1;
-        self.local_vars_stack.push(locals);
+        self.local_vars_stack.push(locals_set);
         self.generate_stmt(body);
         if return_type == "void" {
             self.emit_line("return");
@@ -342,5 +354,39 @@ impl CodeGenerator {
     fn emit_line(&mut self, s: &str) {
         self.emit(s);
         self.output.borrow_mut().push('\n');
+    }
+
+    // Helper to collect all local variable declarations in a function/method body
+    fn collect_locals(&self, stmt: &Stmt, param_names: &std::collections::HashSet<String>) -> Vec<(String, String)> {
+        let mut locals = Vec::new();
+        self.collect_locals_recursive(stmt, param_names, &mut locals);
+        locals
+    }
+
+    fn collect_locals_recursive(&self, stmt: &Stmt, param_names: &std::collections::HashSet<String>, locals: &mut Vec<(String, String)>) {
+        match stmt {
+            Stmt::Block(stmts) => {
+                for s in stmts {
+                    self.collect_locals_recursive(s, param_names, locals);
+                }
+            }
+            Stmt::VariableDecl { var_type, name, .. } => {
+                if !param_names.contains(name) && !locals.iter().any(|(n, _)| n == name) {
+                    locals.push((name.clone(), var_type.clone()));
+                }
+            }
+            // Recurse into branches
+            Stmt::If { then_block, else_block, .. } => {
+                self.collect_locals_recursive(then_block, param_names, locals);
+                if let Some(else_block) = else_block {
+                    self.collect_locals_recursive(else_block, param_names, locals);
+                }
+            }
+            Stmt::While { body, .. } => {
+                self.collect_locals_recursive(body, param_names, locals);
+            }
+            Stmt::Expression(_) | Stmt::Assignment { .. } | Stmt::Print(_) | Stmt::Return { .. } => {}
+            _ => {}
+        }
     }
 }

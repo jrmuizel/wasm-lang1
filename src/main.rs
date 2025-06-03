@@ -2,6 +2,8 @@ mod parser;
 mod codegen;
 
 use parser::{Lexer, Parser, Token};
+use std::fs::File;
+use std::io::Write;
 
 fn main() {
     let input = r#"
@@ -40,6 +42,9 @@ fn main() {
             let mut codegen = codegen::CodeGenerator::new();
             let wasm_code = codegen.generate(ast);
             println!("{}", wasm_code);
+            // write to file
+            let mut file = File::create("output.wat").unwrap();
+            file.write_all(wasm_code.as_bytes()).unwrap();
         }
         Err(e) => eprintln!("Parse error: {}", e),
     }
