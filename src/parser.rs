@@ -224,10 +224,35 @@ impl<'a> Lexer<'a> {
     }
 
     fn skip_whitespace(&mut self) {
-        while let Some(&c) = self.chars.peek() {
-            if c.is_whitespace() {
-                self.chars.next();
-            } else {
+        loop {
+            let mut skipped = false;
+            // Skip whitespace
+            while let Some(&c) = self.chars.peek() {
+                if c.is_whitespace() {
+                    self.chars.next();
+                    skipped = true;
+                } else {
+                    break;
+                }
+            }
+            // Skip C++ style comments
+            if let Some(&'/') = self.chars.peek() {
+                let mut clone = self.chars.clone();
+                clone.next();
+                if let Some(&'/') = clone.peek() {
+                    // Found //, skip until end of line
+                    self.chars.next(); // skip first /
+                    self.chars.next(); // skip second /
+                    while let Some(&c) = self.chars.peek() {
+                        if c == '\n' {
+                            break;
+                        }
+                        self.chars.next();
+                    }
+                    skipped = true;
+                }
+            }
+            if !skipped {
                 break;
             }
         }

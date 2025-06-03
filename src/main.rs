@@ -7,15 +7,16 @@ fn main() {
     let input = r#"
         class MyClass {
             void myMethod(int param) {
-                return this.otherMethod(param);
+                return param + 1;
+                //return this.otherMethod(param);
             }
         }
         void main() {
             int x = 5;
             if (x > 0) {
-                print("Positive");
+                print(x);
             } else {
-                print("Non-positive");
+                print(x);
             }
         }
     "#;
