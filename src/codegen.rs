@@ -1,13 +1,14 @@
 // codegen.rs
 
 use crate::parser::{Stmt, Expr, Token};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
 
 pub struct CodeGenerator {
     classes: HashMap<String, Vec<(String, String)>>,
     output: RefCell<String>,
     indent_level: usize,
+    local_vars_stack: Vec<HashSet<String>>, // Stack of local variable names
 }
 
 impl CodeGenerator {
@@ -16,6 +17,7 @@ impl CodeGenerator {
             classes: HashMap::new(),
             output: RefCell::new(String::new()),
             indent_level: 0,
+            local_vars_stack: Vec::new(),
         }
     }
 
@@ -103,25 +105,26 @@ impl CodeGenerator {
         is_main: bool,
     ) {
         self.emit(&format!("(func ${}", name));
-        for (i, (_, param_type)) in params.iter().enumerate() {
+        let mut locals = HashSet::new();
+        for (param_type, param_name) in params.iter() {
             self.emit(&format!(
                 " (param ${} {})",
-                i,
+                param_name,
                 self.type_to_wasm(param_type)
             ));
+            locals.insert(param_name.clone());
         }
         self.emit(&format!(
             " (result {})\n",
             self.type_to_wasm(return_type)
         ));
         self.indent_level += 1;
-
-        // Generate function body
+        self.local_vars_stack.push(locals);
         self.generate_stmt(body);
-
         if return_type == "void" {
             self.emit_line("return");
         }
+        self.local_vars_stack.pop();
         self.indent_level -= 1;
         self.emit_line(")");
     }
@@ -136,25 +139,27 @@ impl CodeGenerator {
     ) {
         self.emit(&format!("(func ${}.{}", class_name, method_name));
         self.emit(&format!(" (param $this (ref ${}))", class_name));
-        for (i, (param_type, param_name)) in params.iter().enumerate() {
+        let mut locals = HashSet::new();
+        locals.insert("this".to_string());
+        for (param_type, param_name) in params.iter() {
             self.emit(&format!(
                 " (param ${} {})",
                 param_name,
                 self.type_to_wasm(param_type)
             ));
+            locals.insert(param_name.clone());
         }
         self.emit(&format!(
             " (result {})\n",
             self.type_to_wasm(return_type)
         ));
         self.indent_level += 1;
-
-        // Generate method body
+        self.local_vars_stack.push(locals);
         self.generate_stmt(body);
-
         if return_type == "void" {
             self.emit_line("return");
         }
+        self.local_vars_stack.pop();
         self.indent_level -= 1;
         self.emit_line(")");
     }
@@ -162,11 +167,21 @@ impl CodeGenerator {
     fn generate_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Block(stmts) => {
+                // New scope for block
+                self.local_vars_stack.push(HashSet::new());
                 for s in stmts {
+                    // If it's a variable declaration, add to locals
+                    if let Stmt::VariableDecl { name, .. } = s {
+                        if let Some(locals) = self.local_vars_stack.last_mut() {
+                            locals.insert(name.clone());
+                        }
+                    }
                     self.generate_stmt(s);
                 }
+                self.local_vars_stack.pop();
             }
             Stmt::VariableDecl { name, init, .. } => {
+                // Already added to locals in Block
                 if let Some(expr) = init {
                     let value = self.generate_expr(expr);
                     self.emit(&format!("(local.set ${} {})\n", name, value));
@@ -231,7 +246,14 @@ impl CodeGenerator {
                 }
                 "(ref $String)".to_string()
             }
-            Expr::Variable(name) => format!("global.get ${}", name),
+            Expr::Variable(name) => {
+                // Check if name is a local variable
+                if self.local_vars_stack.iter().rev().any(|locals| locals.contains(name)) {
+                    format!("local.get ${}", name)
+                } else {
+                    format!("global.get ${}", name)
+                }
+            }
             Expr::BinaryOp { op, left, right } => {
                 let left_expr = self.generate_expr(left);
                 let right_expr = self.generate_expr(right);
