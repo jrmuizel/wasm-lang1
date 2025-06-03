@@ -21,9 +21,9 @@ fn main() {
         void main() {
             int x = 5;
             if (x > 0) {
-                print(x);
+                printInt(x);
             } else {
-                print(x);
+                printInt(x);
             }
         }
     "#;

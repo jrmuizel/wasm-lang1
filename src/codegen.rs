@@ -241,7 +241,8 @@ impl CodeGenerator {
                 }
             }
             Stmt::Expression(expr) => {
-                self.generate_expr(expr);
+                let value = self.generate_expr(expr);
+                self.emit(&format!("{}\n", value));
             }
             _ => {}
         }
