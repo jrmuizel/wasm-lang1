@@ -13,6 +13,11 @@ fn main() {
                 //return this.otherMethod(param);
             }
         }
+
+        void foo() {
+            printInt(1);
+        }
+
         void main() {
             int x = 5;
             if (x > 0) {

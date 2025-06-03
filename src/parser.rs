@@ -42,6 +42,10 @@ pub enum Expr {
         object: Box<Expr>,
         field: String,
     },
+    FunctionCall {
+        name: String,
+        args: Vec<Expr>,
+    },
     This,
     New {
         class_name: String,
@@ -663,7 +667,17 @@ impl Parser {
                 self.consume(&Token::Delimiter(')'), "Expected ')' after arguments")?;
                 Ok(Expr::New { class_name, args })
             }
-            Some(Token::Identifier(name)) => Ok(Expr::Variable(name)),
+            Some(Token::Identifier(name)) => {
+                // Check for function call
+                if self.check(&Token::Delimiter('(')) {
+                    self.advance(); // consume '('
+                    let args = self.parse_argument_list()?;
+                    self.consume(&Token::Delimiter(')'), "Expected ')' after arguments")?;
+                    Ok(Expr::FunctionCall { name, args })
+                } else {
+                    Ok(Expr::Variable(name))
+                }
+            }
             Some(Token::Delimiter('(')) => {
                 let expr = self.expression()?;
                 self.consume(&Token::Delimiter(')'), "Expected ')'")?;

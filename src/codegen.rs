@@ -313,6 +313,13 @@ impl CodeGenerator {
                 format!("struct.new ${} {}", class_name, init_args)
             }
             Expr::This => "local.get $this".to_string(),
+            Expr::FunctionCall { name, args } => {
+                let mut call_args = String::new();
+                for arg in args {
+                    call_args.push_str(&format!("{} ", self.generate_expr(arg)));
+                }
+                format!("(call ${} {})", name, call_args)
+            },
             _ => "".to_string(),
         }
     }
