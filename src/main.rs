@@ -50,6 +50,8 @@ fn main() {
             // write to file
             let mut file = File::create("output.wat").unwrap();
             file.write_all(wasm_code.as_bytes()).unwrap();
+            let parser = wat::Parser::new();
+            parser.parse_str(None, wasm_code ).unwrap();
         }
         Err(e) => eprintln!("Parse error: {}", e),
     }
