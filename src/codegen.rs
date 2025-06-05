@@ -3,7 +3,7 @@
 use crate::parser::{Stmt, Expr, Token};
 use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
-use wasmtime::{Caller, Val, FuncType, ValType};
+use wasmtime::{Caller, Val, FuncType, ValType, ArrayRef, Rooted};
 
 pub struct CodeGenerator {
     classes: HashMap<String, Vec<(String, String)>>,
@@ -55,7 +55,7 @@ impl CodeGenerator {
             self.emit(&format!("(type ${} (struct", class_name));
             for (field_name, field_type) in fields {
                 let wasm_type = self.type_to_wasm(field_type);
-                self.emit(&format!("\n  (field ${} {})", field_name, wasm_type));
+                self.emit(&format!("\n  (field ${} (mut {}))", field_name, wasm_type));
             }
             self.emit("))\n");
         }
@@ -78,7 +78,12 @@ impl CodeGenerator {
                     self.emit(&format!("(global ${} (mut {})", name, wasm_type));
                     if let Some(expr) = init {
                         let value = self.generate_expr(&expr);
-                        self.emit(&format!("(global.set ${} {})\n", name, value));
+                        let value_expr = if value.trim_start().starts_with('(') {
+                            value
+                        } else {
+                            format!("({})", value)
+                        };
+                        self.emit(&format!("(global.set ${} {})\n", name, value_expr));
                     }
                 }
                 _ => {}
@@ -204,12 +209,22 @@ impl CodeGenerator {
                 // Already added to locals in Block
                 if let Some(expr) = init {
                     let value = self.generate_expr(expr);
-                    self.emit(&format!("(local.set ${} {})\n", name, value));
+                    let value_expr = if value.trim_start().starts_with('(') {
+                        value
+                    } else {
+                        format!("({})", value)
+                    };
+                    self.emit(&format!("(local.set ${} {})\n", name, value_expr));
                 }
             }
             Stmt::Assignment { name, value } => {
                 let expr_value = self.generate_expr(value);
-                self.emit(&format!("(global.set ${} {})\n", name, expr_value));
+                let value_expr = if expr_value.trim_start().starts_with('(') {
+                    expr_value
+                } else {
+                    format!("({})", expr_value)
+                };
+                self.emit(&format!("(global.set ${} {})\n", name, value_expr));
             }
             Stmt::If { condition, then_block, else_block } => {
                 let cond = self.generate_expr(condition);
@@ -251,7 +266,7 @@ impl CodeGenerator {
             Stmt::Return { value } => {
                 if let Some(expr) = value {
                     let ret_value = self.generate_expr(expr);
-                    self.emit(&format!("return {}\n", ret_value));
+                    self.emit(&format!("{}\nreturn\n", ret_value));
                 } else {
                     self.emit_line("return");
                 }
@@ -269,11 +284,14 @@ impl CodeGenerator {
             Expr::LiteralInt(n) => format!("i32.const {}", n),
             Expr::LiteralBool(b) => format!("i32.const {}", if *b { 1 } else { 0 }),
             Expr::LiteralString(s) => {
-                self.emit(&format!("(array.new $String (i32.const {})", s.len()));
-                for (i, c) in s.chars().enumerate() {
-                    self.emit(&format!("(array.set $String (i32.const {}) (i32.const {}))", i, c as u32));
+                // Try to use array.new_fixed if available
+                if s.is_empty() {
+                    // Empty string: just create an empty array
+                    format!("(array.new $String (i32.const 0) (i32.const 0))")
+                } else {
+                    let values = s.chars().map(|c| format!("i32.const {}", c as u32)).collect::<Vec<_>>().join(" ");
+                    format!("(array.new_fixed $String {} {})", s.len(), values)
                 }
-                "(ref $String)".to_string()
             }
             Expr::Variable(name) => {
                 // Try to find the type of the variable in local_vars_stack
@@ -295,19 +313,25 @@ impl CodeGenerator {
                     // Assignment expression: left must be a variable or field access
                     if let Expr::Variable(name) = &**left {
                         let value = self.generate_expr(right);
-                        if self.local_vars_stack.iter().rev().any(|locals| locals.contains_key(name)) {
-                            self.emit(&format!("(local.set ${} {})\n", name, value));
+                        let value_expr = if value.trim_start().starts_with('(') {
+                            value
                         } else {
-                            self.emit(&format!("(global.set ${} {})\n", name, value));
-                        }
-                        value
+                            format!("({})", value)
+                        };
+                        self.emit(&format!("(local.set ${} {})\n", name, value_expr));
+                        String::new()
                     } else if let Expr::FieldAccess { object, field } = &**left {
                         let obj = self.generate_expr(object);
                         let value = self.generate_expr(right);
                         // Use struct.set for field assignment
                         let class_name = self.get_class_name(object);
-                        self.emit(&format!("(struct.set ${} ${} {} {})\n", class_name, field, obj, value));
-                        value
+                        let value_expr = if value.trim_start().starts_with('(') {
+                            value
+                        } else {
+                            format!("({})", value)
+                        };
+                        self.emit(&format!("(struct.set ${} ${} ({}) {})\n", class_name, field, obj, value_expr));
+                        String::new()
                     } else {
                         panic!("Assignment left side must be a variable or field");
                     }
@@ -343,7 +367,8 @@ impl CodeGenerator {
             }
             Expr::FieldAccess { object, field } => {
                 let obj = self.generate_expr(object);
-                format!("struct.get ${} ${} {}", self.get_class_name(object), field, obj)
+                // Emit as S-expression: (struct.get $Type $field (<object_expr>))
+                format!("(struct.get ${} ${} ({}))", self.get_class_name(object), field, obj)
             }
             Expr::MethodCall { object, method, args } => {
                 let obj_code = self.generate_expr(object);
@@ -356,8 +381,17 @@ impl CodeGenerator {
             }
             Expr::New { class_name, args } => {
                 let mut init_args = String::new();
-                for arg in args {
-                    init_args.push_str(&format!("{} ", self.generate_expr(arg)));
+                if args.is_empty() {
+                    // Zero-initialize all fields if no args provided
+                    if let Some(fields) = self.classes.get(class_name) {
+                        for _ in fields {
+                            init_args.push_str("i32.const 0 ");
+                        }
+                    }
+                } else {
+                    for arg in args {
+                        init_args.push_str(&format!("{} ", self.generate_expr(arg)));
+                    }
                 }
                 format!("struct.new ${} {}", class_name, init_args)
             }
@@ -365,9 +399,10 @@ impl CodeGenerator {
             Expr::FunctionCall { name, args } => {
                 let mut call_args = String::new();
                 for arg in args {
-                    call_args.push_str(&format!("{} ", self.generate_expr(arg)));
+                    call_args.push_str(&format!("{}\n", self.generate_expr(arg)));
                 }
-                format!("(call ${} {})", name, call_args)
+                // Emit arguments, then call
+                format!("{}call ${}", call_args, name)
             },
             _ => "".to_string(),
         }
@@ -631,7 +666,7 @@ mod tests {
         let wasm = wat::parse_str(&wat).expect("Generated WAT should be valid");
 
         // Capture print output
-        let output = Arc::new(Mutex::new(Vec::new()));
+        let output = Arc::new(Mutex::new(Vec::<i32>::new()));
         let output_clone = output.clone();
 
         // Setup wasmtime
@@ -661,16 +696,11 @@ mod tests {
                 //output_clone.lock().unwrap().push(val);
             }
         }).unwrap();
-        linker.func_wrap(
-            "host",
-            "printString",
-            {
-                let output_clone = output.clone();
-                move |val: Rooted<ArrayRef>| {
-                    // For test purposes, do nothing or log
-                }
+        linker.func_wrap("host", "printString", {
+            move |_val: Rooted<ArrayRef>| {
+                // For test purposes, do nothing or set a flag
             }
-        ).unwrap();
+        }).unwrap();
 
         let instance = linker.instantiate(&mut store, &module).unwrap();
         let main = instance.get_func(&mut store, "main").expect("main function");
@@ -678,5 +708,218 @@ mod tests {
 
         let out = output.lock().unwrap();
         assert_eq!(*out, vec![43]);
+    }
+
+    #[test]
+    fn codegen_execution_print_bool() {
+        use wasmtime::{Engine, Module, Store, Linker, Config};
+        use std::sync::{Arc, Mutex};
+
+        let input = r#"
+            void main() {
+                print(true);
+            }
+        "#;
+        let ast = parse(input);
+        let mut codegen = CodeGenerator::new();
+        let wat = codegen.generate(ast);
+        let wasm = wat::parse_str(&wat).expect("Generated WAT should be valid");
+        let output = Arc::new(Mutex::new(Vec::<i32>::new()));
+        let mut config = Config::new();
+        config.wasm_multi_memory(true);
+        config.wasm_gc(true);
+        let engine = Engine::new(&config).unwrap();
+        let module = Module::from_binary(&engine, &wasm).unwrap();
+        let mut linker = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        linker.func_wrap("host", "printInt", {
+            let output = output.clone();
+            move |val: i32| {
+                output.lock().unwrap().push(val);
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printBool", {
+            let output = output.clone();
+            move |val: i32| {
+                output.lock().unwrap().push(val);
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printFloat", {
+            let _output = output.clone();
+            move |_val: f32| {
+            }
+        }).unwrap();
+        let string_called = Arc::new(Mutex::new(false));
+        let string_called_clone = string_called.clone();
+        linker.func_wrap("host", "printString", {
+            move |_val: Rooted<ArrayRef>| {
+                *string_called_clone.lock().unwrap() = true;
+            }
+        }).unwrap();
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+        let main = instance.get_func(&mut store, "main").expect("main function");
+        main.call(&mut store, &[], &mut []).expect("main should run");
+        let out = output.lock().unwrap();
+        assert_eq!(*out, vec![1]);
+    }
+
+    #[test]
+    fn codegen_execution_print_string() {
+        use wasmtime::{Engine, Module, Store, Linker, Config};
+        use std::sync::{Arc, Mutex};
+
+        let input = r#"
+            void main() {
+                print("hi");
+            }
+        "#;
+        let ast = parse(input);
+        let mut codegen = CodeGenerator::new();
+        let wat = codegen.generate(ast);
+        let wasm = wat::parse_str(&wat).expect("Generated WAT should be valid");
+        let output = Arc::new(Mutex::new(Vec::<i32>::new()));
+        let mut config = Config::new();
+        config.wasm_multi_memory(true);
+        config.wasm_gc(true);
+        let engine = Engine::new(&config).unwrap();
+        let module = Module::from_binary(&engine, &wasm).unwrap();
+        let mut linker = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        linker.func_wrap("host", "printInt", {
+            let _output = output.clone();
+            move |_val: i32| {
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printBool", {
+            let _output = output.clone();
+            move |_val: i32| {
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printFloat", {
+            let _output = output.clone();
+            move |_val: f32| {
+            }
+        }).unwrap();
+        let string_called = Arc::new(Mutex::new(false));
+        let string_called_clone = string_called.clone();
+        linker.func_wrap("host", "printString", {
+            move |_val: Rooted<ArrayRef>| {
+                *string_called_clone.lock().unwrap() = true;
+            }
+        }).unwrap();
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+        let main = instance.get_func(&mut store, "main").expect("main function");
+        main.call(&mut store, &[], &mut []).expect("main should run");
+        assert!(*string_called.lock().unwrap());
+    }
+
+    #[test]
+    fn codegen_execution_print_function_result() {
+        use wasmtime::{Engine, Module, Store, Linker, Config};
+        use std::sync::{Arc, Mutex};
+
+        let input = r#"
+            int add(int a, int b) {
+                return a + b;
+            }
+            void main() {
+                print(add(2, 3));
+            }
+        "#;
+        let ast = parse(input);
+        let mut codegen = CodeGenerator::new();
+        let wat = codegen.generate(ast);
+        eprintln!("{}", wat);
+        let wasm = wat::parse_str(&wat).expect("Generated WAT should be valid");
+        let output = Arc::new(Mutex::new(Vec::<i32>::new()));
+        let mut config = Config::new();
+        config.wasm_multi_memory(true);
+        config.wasm_gc(true);
+        let engine = Engine::new(&config).unwrap();
+        let module = Module::from_binary(&engine, &wasm).unwrap();
+        let mut linker = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        linker.func_wrap("host", "printInt", {
+            let output = output.clone();
+            move |val: i32| {
+                output.lock().unwrap().push(val);
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printBool", {
+            let _output = output.clone();
+            move |_val: i32| {
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printFloat", {
+            let _output = output.clone();
+            move |_val: f32| {
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printString", {
+            move |_val: Rooted<ArrayRef>| {
+                // For test purposes, do nothing
+            }
+        }).unwrap();
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+        let main = instance.get_func(&mut store, "main").expect("main function");
+        main.call(&mut store, &[], &mut []).expect("main should run");
+        let out = output.lock().unwrap();
+        assert_eq!(*out, vec![5]);
+    }
+
+    #[test]
+    fn codegen_execution_print_class_field() {
+        use wasmtime::{Engine, Module, Store, Linker, Config};
+        use std::sync::{Arc, Mutex};
+
+        let input = r#"
+            class Foo {
+                int value;
+            }
+            void main() {
+                Foo f = new Foo();
+                f.value = 99;
+                print(f.value);
+            }
+        "#;
+        let ast = parse(input);
+        let mut codegen = CodeGenerator::new();
+        let wat = codegen.generate(ast);
+        eprintln!("{}", wat);
+        let wasm = wat::parse_str(&wat).expect("Generated WAT should be valid");
+        let output = Arc::new(Mutex::new(Vec::<i32>::new()));
+        let mut config = Config::new();
+        config.wasm_multi_memory(true);
+        config.wasm_gc(true);
+        let engine = Engine::new(&config).unwrap();
+        let module = Module::from_binary(&engine, &wasm).unwrap();
+        let mut linker = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        linker.func_wrap("host", "printInt", {
+            let output = output.clone();
+            move |val: i32| {
+                output.lock().unwrap().push(val);
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printBool", {
+            let _output = output.clone();
+            move |_val: i32| {
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printFloat", {
+            let _output = output.clone();
+            move |_val: f32| {
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printString", {
+            move |_val: Rooted<ArrayRef>| {
+                // For test purposes, do nothing
+            }
+        }).unwrap();
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+        let main = instance.get_func(&mut store, "main").expect("main function");
+        main.call(&mut store, &[], &mut []).expect("main should run");
+        let out = output.lock().unwrap();
+        assert_eq!(*out, vec![99]);
     }
 }
