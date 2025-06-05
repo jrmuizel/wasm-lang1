@@ -245,7 +245,8 @@ impl CodeGenerator {
                     Some("String") => "$printString",
                     _ => "$printInt", // Default to int for now
                 };
-                self.emit(&format!("(call {} {})\n", print_func, value));
+                // Emit the value first, then the call
+                self.emit(&format!("{}\n(call {})\n", value, print_func));
             }
             Stmt::Return { value } => {
                 if let Some(expr) = value {
@@ -313,21 +314,23 @@ impl CodeGenerator {
                 } else {
                     let left_expr = self.generate_expr(left);
                     let right_expr = self.generate_expr(right);
-                    match op.as_str() {
-                        "+" => format!("i32.add {} {}", left_expr, right_expr),
-                        "-" => format!("i32.sub {} {}", left_expr, right_expr),
-                        "*" => format!("i32.mul {} {}", left_expr, right_expr),
-                        "/" => format!("i32.div_s {} {}", left_expr, right_expr),
-                        "==" => format!("i32.eq {} {}", left_expr, right_expr),
-                        "!=" => format!("i32.ne {} {}", left_expr, right_expr),
-                        "<" => format!("i32.lt_s {} {}", left_expr, right_expr),
-                        ">" => format!("i32.gt_s {} {}", left_expr, right_expr),
-                        "<=" => format!("i32.le_s {} {}", left_expr, right_expr),
-                        ">=" => format!("i32.ge_s {} {}", left_expr, right_expr),
-                        "&&" => format!("i32.and {} {}", left_expr, right_expr),
-                        "||" => format!("i32.or {} {}", left_expr, right_expr),
+                    let op_code = match op.as_str() {
+                        "+" => "i32.add",
+                        "-" => "i32.sub",
+                        "*" => "i32.mul",
+                        "/" => "i32.div_s",
+                        "==" => "i32.eq",
+                        "!=" => "i32.ne",
+                        "<" => "i32.lt_s",
+                        ">" => "i32.gt_s",
+                        "<=" => "i32.le_s",
+                        ">=" => "i32.ge_s",
+                        "&&" => "i32.and",
+                        "||" => "i32.or",
                         _ => panic!("Unsupported operator: {}", op),
-                    }
+                    };
+                    // Emit operands first, then operator
+                    format!("{}\n{}\n{}", left_expr, right_expr, op_code)
                 }
             }
             Expr::UnaryOp { op, operand } => {
@@ -618,7 +621,7 @@ mod tests {
         let input = r#"
                 void main() {
                     int x = 42;
-                    print(x);
+                    print(x + 1);
                 }
         "#;
         let ast = parse(input);
@@ -674,6 +677,6 @@ mod tests {
         main.call(&mut store, &[], &mut []).expect("main should run");
 
         let out = output.lock().unwrap();
-        assert_eq!(*out, vec![42]);
+        assert_eq!(*out, vec![43]);
     }
 }
