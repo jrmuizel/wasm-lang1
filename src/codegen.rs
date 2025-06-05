@@ -8,7 +8,8 @@ pub struct CodeGenerator {
     classes: HashMap<String, Vec<(String, String)>>,
     output: RefCell<String>,
     indent_level: usize,
-    local_vars_stack: Vec<HashSet<String>>, // Stack of local variable names
+    local_vars_stack: Vec<HashMap<String, String>>, // Stack of local variable names to types
+    current_class: Option<String>,
 }
 
 impl CodeGenerator {
@@ -18,6 +19,7 @@ impl CodeGenerator {
             output: RefCell::new(String::new()),
             indent_level: 0,
             local_vars_stack: Vec::new(),
+            current_class: None,
         }
     }
 
@@ -51,12 +53,7 @@ impl CodeGenerator {
         for (class_name, fields) in &self.classes {
             self.emit(&format!("(type ${} (struct", class_name));
             for (field_name, field_type) in fields {
-                let wasm_type = match field_type.as_str() {
-                    "int" => "i32",
-                    "boolean" => "i32",
-                    "String" => "(ref $String)",
-                    _ => "(ref $Object)" // Default to generic object
-                };
+                let wasm_type = self.type_to_wasm(field_type);
                 self.emit(&format!("\n  (field ${} {})", field_name, wasm_type));
             }
             self.emit("))\n");
@@ -76,7 +73,8 @@ impl CodeGenerator {
                     }
                 }
                 Stmt::VariableDecl { name, var_type, init, .. } => {
-                    self.emit(&format!("(global ${} (mut {})", name, self.type_to_wasm(&var_type)));
+                    let wasm_type = self.type_to_wasm(&var_type);
+                    self.emit(&format!("(global ${} (mut {})", name, wasm_type));
                     if let Some(expr) = init {
                         let value = self.generate_expr(&expr);
                         self.emit(&format!("(global.set ${} {})\n", name, value));
@@ -105,27 +103,29 @@ impl CodeGenerator {
         is_main: bool,
     ) {
         self.emit(&format!("(func ${}", name));
-        let mut locals_set = std::collections::HashSet::new();
+        let mut locals_map = std::collections::HashMap::new();
         for (param_type, param_name) in params.iter() {
             self.emit(&format!(
                 " (param ${} {})",
                 param_name,
                 self.type_to_wasm(param_type)
             ));
-            locals_set.insert(param_name.clone());
+            locals_map.insert(param_name.clone(), param_type.clone());
         }
-        self.emit(&format!(
-            " (result {})\n",
-            self.type_to_wasm(return_type)
-        ));
+        let result_type = self.type_to_wasm(return_type);
+        if !result_type.is_empty() {
+            self.emit(&format!(" (result {})\n", result_type));
+        } else {
+            self.emit("\n");
+        }
         // Emit local variable declarations
-        let locals = self.collect_locals(body, &locals_set);
+        let locals = self.collect_locals(body, &locals_map.keys().cloned().collect());
         for (name, var_type) in &locals {
             self.emit(&format!(" (local ${} {})", name, self.type_to_wasm(var_type)));
-            locals_set.insert(name.clone());
+            locals_map.insert(name.clone(), var_type.clone());
         }
         self.indent_level += 1;
-        self.local_vars_stack.push(locals_set);
+        self.local_vars_stack.push(locals_map);
         self.generate_stmt(body);
         if return_type == "void" {
             self.emit_line("return");
@@ -143,30 +143,34 @@ impl CodeGenerator {
         params: &[(String, String)],
         body: &Stmt,
     ) {
+        let prev_class = self.current_class.clone();
+        self.current_class = Some(class_name.to_string());
         self.emit(&format!("(func ${}.{}", class_name, method_name));
         self.emit(&format!(" (param $this (ref ${}))", class_name));
-        let mut locals_set = std::collections::HashSet::new();
-        locals_set.insert("this".to_string());
+        let mut locals_map = std::collections::HashMap::new();
+        locals_map.insert("this".to_string(), class_name.to_string());
         for (param_type, param_name) in params.iter() {
             self.emit(&format!(
                 " (param ${} {})",
                 param_name,
                 self.type_to_wasm(param_type)
             ));
-            locals_set.insert(param_name.clone());
+            locals_map.insert(param_name.clone(), param_type.clone());
         }
-        self.emit(&format!(
-            " (result {})\n",
-            self.type_to_wasm(return_type)
-        ));
+        let result_type = self.type_to_wasm(return_type);
+        if !result_type.is_empty() {
+            self.emit(&format!(" (result {})\n", result_type));
+        } else {
+            self.emit("\n");
+        }
         // Emit local variable declarations
-        let locals = self.collect_locals(body, &locals_set);
+        let locals = self.collect_locals(body, &locals_map.keys().cloned().collect());
         for (name, var_type) in &locals {
             self.emit(&format!(" (local ${} {})", name, self.type_to_wasm(var_type)));
-            locals_set.insert(name.clone());
+            locals_map.insert(name.clone(), var_type.clone());
         }
         self.indent_level += 1;
-        self.local_vars_stack.push(locals_set);
+        self.local_vars_stack.push(locals_map);
         self.generate_stmt(body);
         if return_type == "void" {
             self.emit_line("return");
@@ -174,18 +178,21 @@ impl CodeGenerator {
         self.local_vars_stack.pop();
         self.indent_level -= 1;
         self.emit_line(")");
+        // Export the method so it can be called
+        self.emit_line(&format!("(export \"{}.{}\" (func ${}.{}))", class_name, method_name, class_name, method_name));
+        self.current_class = prev_class;
     }
 
     fn generate_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Block(stmts) => {
                 // New scope for block
-                self.local_vars_stack.push(HashSet::new());
+                self.local_vars_stack.push(HashMap::new());
                 for s in stmts {
                     // If it's a variable declaration, add to locals
-                    if let Stmt::VariableDecl { name, .. } = s {
+                    if let Stmt::VariableDecl { name, var_type, .. } = s {
                         if let Some(locals) = self.local_vars_stack.last_mut() {
-                            locals.insert(name.clone());
+                            locals.insert(name.clone(), var_type.clone());
                         }
                     }
                     self.generate_stmt(s);
@@ -230,7 +237,14 @@ impl CodeGenerator {
             }
             Stmt::Print(expr) => {
                 let value = self.generate_expr(expr);
-                self.emit(&format!("(call $print {})\n", value));
+                // Determine the type of the expression for correct print function
+                let print_func = match self.infer_type(expr) {
+                    Some("int") => "$printInt",
+                    Some("boolean") => "$printBool",
+                    Some("String") => "$printString",
+                    _ => "$printInt", // Default to int for now
+                };
+                self.emit(&format!("(call {} {})\n", print_func, value));
             }
             Stmt::Return { value } => {
                 if let Some(expr) = value {
@@ -260,30 +274,59 @@ impl CodeGenerator {
                 "(ref $String)".to_string()
             }
             Expr::Variable(name) => {
-                // Check if name is a local variable
-                if self.local_vars_stack.iter().rev().any(|locals| locals.contains(name)) {
-                    format!("local.get ${}", name)
-                } else {
-                    format!("global.get ${}", name)
+                // Try to find the type of the variable in local_vars_stack
+                for locals in self.local_vars_stack.iter().rev() {
+                    if let Some(var_type) = locals.get(name) {
+                        match var_type.as_str() {
+                            "int" | "boolean" => return format!("local.get ${}", name),
+                            "String" => return format!("local.get ${}", name),
+                            s if self.classes.contains_key(s) => return format!("local.get ${}", name),
+                            _ => panic!("Unknown local variable type: {} for {}", var_type, name),
+                        }
+                    }
                 }
+                // If not found in locals, check if it's a class name (shouldn't happen for variables)
+                panic!("Unknown variable: {}", name)
             }
             Expr::BinaryOp { op, left, right } => {
-                let left_expr = self.generate_expr(left);
-                let right_expr = self.generate_expr(right);
-                match op.as_str() {
-                    "+" => format!("i32.add {} {}", left_expr, right_expr),
-                    "-" => format!("i32.sub {} {}", left_expr, right_expr),
-                    "*" => format!("i32.mul {} {}", left_expr, right_expr),
-                    "/" => format!("i32.div_s {} {}", left_expr, right_expr),
-                    "==" => format!("i32.eq {} {}", left_expr, right_expr),
-                    "!=" => format!("i32.ne {} {}", left_expr, right_expr),
-                    "<" => format!("i32.lt_s {} {}", left_expr, right_expr),
-                    ">" => format!("i32.gt_s {} {}", left_expr, right_expr),
-                    "<=" => format!("i32.le_s {} {}", left_expr, right_expr),
-                    ">=" => format!("i32.ge_s {} {}", left_expr, right_expr),
-                    "&&" => format!("i32.and {} {}", left_expr, right_expr),
-                    "||" => format!("i32.or {} {}", left_expr, right_expr),
-                    _ => panic!("Unsupported operator: {}", op),
+                if op == "=" {
+                    // Assignment expression: left must be a variable or field access
+                    if let Expr::Variable(name) = &**left {
+                        let value = self.generate_expr(right);
+                        if self.local_vars_stack.iter().rev().any(|locals| locals.contains_key(name)) {
+                            self.emit(&format!("(local.set ${} {})\n", name, value));
+                        } else {
+                            self.emit(&format!("(global.set ${} {})\n", name, value));
+                        }
+                        value
+                    } else if let Expr::FieldAccess { object, field } = &**left {
+                        let obj = self.generate_expr(object);
+                        let value = self.generate_expr(right);
+                        // Use struct.set for field assignment
+                        let class_name = self.get_class_name(object);
+                        self.emit(&format!("(struct.set ${} ${} {} {})\n", class_name, field, obj, value));
+                        value
+                    } else {
+                        panic!("Assignment left side must be a variable or field");
+                    }
+                } else {
+                    let left_expr = self.generate_expr(left);
+                    let right_expr = self.generate_expr(right);
+                    match op.as_str() {
+                        "+" => format!("i32.add {} {}", left_expr, right_expr),
+                        "-" => format!("i32.sub {} {}", left_expr, right_expr),
+                        "*" => format!("i32.mul {} {}", left_expr, right_expr),
+                        "/" => format!("i32.div_s {} {}", left_expr, right_expr),
+                        "==" => format!("i32.eq {} {}", left_expr, right_expr),
+                        "!=" => format!("i32.ne {} {}", left_expr, right_expr),
+                        "<" => format!("i32.lt_s {} {}", left_expr, right_expr),
+                        ">" => format!("i32.gt_s {} {}", left_expr, right_expr),
+                        "<=" => format!("i32.le_s {} {}", left_expr, right_expr),
+                        ">=" => format!("i32.ge_s {} {}", left_expr, right_expr),
+                        "&&" => format!("i32.and {} {}", left_expr, right_expr),
+                        "||" => format!("i32.or {} {}", left_expr, right_expr),
+                        _ => panic!("Unsupported operator: {}", op),
+                    }
                 }
             }
             Expr::UnaryOp { op, operand } => {
@@ -299,12 +342,13 @@ impl CodeGenerator {
                 format!("struct.get ${} ${} {}", self.get_class_name(object), field, obj)
             }
             Expr::MethodCall { object, method, args } => {
-                let obj = self.generate_expr(object);
+                let obj_code = self.generate_expr(object);
                 let mut call_args = String::new();
                 for arg in args {
                     call_args.push_str(&format!("{} ", self.generate_expr(arg)));
                 }
-                format!("call ${}.{} {} {}", self.get_class_name(object), method, obj, call_args)
+                let class_name = self.get_class_name(object);
+                format!("(call ${}.{} {}{})", class_name, method, obj_code, call_args)
             }
             Expr::New { class_name, args } => {
                 let mut init_args = String::new();
@@ -326,20 +370,40 @@ impl CodeGenerator {
     }
 
     fn get_class_name(&self, expr: &Expr) -> String {
-        // Simplified: extract class name from expression
         match expr {
-            Expr::Variable(name) => name.clone(),
+            Expr::Variable(name) => {
+                // Try to find the type of the variable in local_vars_stack
+                for locals in self.local_vars_stack.iter().rev() {
+                    if let Some(var_type) = locals.get(name) {
+                        if self.classes.contains_key(var_type) {
+                            return var_type.clone();
+                        }
+                    }
+                }
+                // If not found in locals, check if it's a class name
+                if self.classes.contains_key(name) {
+                    return name.clone();
+                }
+                "Object".to_string()
+            }
+            Expr::This => {
+                self.current_class.clone().unwrap_or_else(|| "Object".to_string())
+            },
+            Expr::FieldAccess { object, .. } => self.get_class_name(object),
             _ => "Object".to_string(),
         }
     }
 
-    fn type_to_wasm(&self, t: &str) -> &str {
+    fn type_to_wasm(&self, t: &str) -> String {
         match t {
-            "int" => "i32",
-            "boolean" => "i32",
-            "String" => "(ref $String)",
-            "void" => "",
-            _ => "(ref $Object)",
+            "int" => "i32".to_string(),
+            "boolean" => "i32".to_string(),
+            "String" => "(ref $String)".to_string(),
+            "void" => "".to_string(),
+            s if self.classes.contains_key(s) => {
+                format!("(ref ${})", s)
+            }
+            _ => "(ref $Object)".to_string(),
         }
     }
 
@@ -396,5 +460,151 @@ impl CodeGenerator {
             Stmt::Expression(_) | Stmt::Assignment { .. } | Stmt::Print(_) | Stmt::Return { .. } => {}
             _ => {}
         }
+    }
+
+    // Add a simple type inference helper for print
+    fn infer_type(&self, expr: &Expr) -> Option<&str> {
+        match expr {
+            Expr::LiteralInt(_) => Some("int"),
+            Expr::LiteralBool(_) => Some("boolean"),
+            Expr::LiteralString(_) => Some("String"),
+            Expr::Variable(name) => {
+                // Try to find the type from local_vars_stack or classes
+                // For now, default to int
+                Some("int")
+            }
+            Expr::BinaryOp { .. } => Some("int"),
+            Expr::UnaryOp { .. } => Some("int"),
+            Expr::FunctionCall { .. } => Some("int"),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::{Lexer, Parser};
+    use wat::parse_str;
+
+    fn parse(input: &str) -> Vec<Stmt> {
+        let mut lexer = Lexer::new(input);
+        let mut tokens = Vec::new();
+        loop {
+            let token = lexer.next_token();
+            if token == crate::parser::Token::EndOfInput {
+                break;
+            }
+            tokens.push(token);
+        }
+        let mut parser = Parser::new(tokens);
+        parser.parse().unwrap()
+    }
+
+    #[test]
+    fn codegen_produces_valid_wasm() {
+        let input = r#"
+            class Program {
+                void main() {
+                    int x = 10;
+                    print(x);
+                }
+            }
+        "#;
+        let ast = parse(input);
+        let mut codegen = CodeGenerator::new();
+        let wat = codegen.generate(ast);
+        // wat::parse_str will error if the WAT is invalid
+        parse_str(&wat).expect("Generated WAT should be valid");
+    }
+
+    #[test]
+    fn codegen_valid_wasm_with_class_and_method() {
+        let input = r#"
+            class Counter {
+                int value;
+                void inc() { this.value = this.value + 1; }
+            }
+            class Program {
+                void main() {
+                    Counter c = new Counter();
+                    c.inc();
+                    print(c.value);
+                }
+            }
+        "#;
+        let ast = parse(input);
+        let mut codegen = CodeGenerator::new();
+        let wat = codegen.generate(ast);
+        parse_str(&wat).expect("Generated WAT should be valid for class and method");
+    }
+
+    #[test]
+    fn codegen_valid_wasm_with_if_else() {
+        let input = r#"
+            void main() {
+                int x = 5;
+                if (x > 0) {
+                    print(x);
+                } else {
+                    print(0);
+                }
+            }
+        "#;
+        let ast = parse(input);
+        let mut codegen = CodeGenerator::new();
+        let wat = codegen.generate(ast);
+        parse_str(&wat).expect("Generated WAT should be valid for if/else");
+    }
+
+    #[test]
+    fn codegen_valid_wasm_with_while() {
+        let input = r#"
+            void main() {
+                int x = 0;
+                while (x < 10) {
+                    print(x);
+                    x = x + 1;
+                }
+            }
+        "#;
+        let ast = parse(input);
+        let mut codegen = CodeGenerator::new();
+        let wat = codegen.generate(ast);
+        parse_str(&wat).expect("Generated WAT should be valid for while loop");
+    }
+
+    #[test]
+    fn codegen_valid_wasm_with_return() {
+        let input = r#"
+            int add(int a, int b) {
+                return a + b;
+            }
+            void main() {
+                int y = add(1, 2);
+                print(y);
+            }
+        "#;
+        let ast = parse(input);
+        let mut codegen = CodeGenerator::new();
+        let wat = codegen.generate(ast);
+        parse_str(&wat).expect("Generated WAT should be valid for return statement");
+    }
+
+    #[test]
+    fn codegen_valid_wasm_with_function_call() {
+        let input = r#"
+            int square(int x) {
+                return x * x;
+            }
+            void main() {
+                int z = square(4);
+                print(z);
+            }
+        "#;
+        let ast = parse(input);
+        let mut codegen = CodeGenerator::new();
+        let wat = codegen.generate(ast);
+        parse_str(&wat).expect("Generated WAT should be valid for function call");
     }
 }
