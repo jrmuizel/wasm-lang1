@@ -3,6 +3,7 @@
 use crate::parser::{Stmt, Expr, Token};
 use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
+use wasmtime::{Caller, Val, FuncType, ValType};
 
 pub struct CodeGenerator {
     classes: HashMap<String, Vec<(String, String)>>,
@@ -30,7 +31,7 @@ impl CodeGenerator {
         // Import print functions
         self.emit_line("(import \"host\" \"printInt\" (func $printInt (param i32)))");
         self.emit_line("(import \"host\" \"printBool\" (func $printBool (param i32)))");
-        self.emit_line("(import \"host\" \"printString\" (func $printString (param (ref $String))))");
+        self.emit_line("(import \"host\" \"printString\" (func $printString (param (ref array))))");
         self.emit_line("(import \"host\" \"printFloat\" (func $printFloat (param f32)))");
 
         // Define String type
@@ -485,6 +486,7 @@ impl CodeGenerator {
 mod tests {
     use super::*;
     use crate::parser::{Lexer, Parser};
+    use wasmtime::{ArrayRef, ExternRef, Rooted};
     use wat::parse_str;
 
     fn parse(input: &str) -> Vec<Stmt> {
@@ -606,5 +608,72 @@ mod tests {
         let mut codegen = CodeGenerator::new();
         let wat = codegen.generate(ast);
         parse_str(&wat).expect("Generated WAT should be valid for function call");
+    }
+
+    #[test]
+    fn codegen_execution_with_wasmtime() {
+        use wasmtime::{Engine, Module, Store, Linker, Config};
+        use std::sync::{Arc, Mutex};
+
+        let input = r#"
+                void main() {
+                    int x = 42;
+                    print(x);
+                }
+        "#;
+        let ast = parse(input);
+        let mut codegen = CodeGenerator::new();
+        let wat = codegen.generate(ast);
+        eprintln!("{}", &wat);
+        let wasm = wat::parse_str(&wat).expect("Generated WAT should be valid");
+
+        // Capture print output
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let output_clone = output.clone();
+
+        // Setup wasmtime
+        let mut config = Config::new();
+        config.wasm_multi_memory(true);
+        config.wasm_gc(true);
+        let engine = Engine::new(&config).unwrap();
+        let module = Module::from_binary(&engine, &wasm).unwrap();
+        let mut linker = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+
+        linker.func_wrap("host", "printInt", {
+            let output_clone = output.clone();
+            move |val: i32| {
+                output_clone.lock().unwrap().push(val);
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printBool", {
+            let output_clone = output.clone();
+            move |val: i32| {
+                output_clone.lock().unwrap().push(val);
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printFloat", {
+            let output_clone = output.clone();
+            move |val: f32| {
+                //output_clone.lock().unwrap().push(val);
+            }
+        }).unwrap();
+        linker.func_wrap(
+            "host",
+            "printString",
+            {
+                let output_clone = output.clone();
+                move |val: Rooted<ArrayRef>| {
+                    // For test purposes, do nothing or log
+                }
+            }
+        ).unwrap();
+
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+        let main = instance.get_func(&mut store, "main").expect("main function");
+        main.call(&mut store, &[], &mut []).expect("main should run");
+
+        let out = output.lock().unwrap();
+        assert_eq!(*out, vec![42]);
     }
 }
