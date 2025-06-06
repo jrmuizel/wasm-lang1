@@ -166,7 +166,7 @@ impl<'a> Lexer<'a> {
                     self.next_char();
                     Token::Delimiter(c)
                 }
-                '+' | '-' | '*' | '/' | '!' | '&' | '|' | '<' | '>' | '=' => {
+                '+' | '-' | '*' | '/' | '!' | '&' | '|' | '<' | '>' | '=' | '^' | '~' => {
                     let op = self.read_operator();
                     Token::Operator(op)
                 }
@@ -262,9 +262,24 @@ impl<'a> Lexer<'a> {
                 || (op == "-" && next == '=')
                 || (op == "*" && next == '=')
                 || (op == "/" && next == '=')
+                || (op == "<" && next == '<')
+                || (op == ">" && next == '>')
+                || (op == "^" && next == '=')
+                || (op == "&" && next == '=')
+                || (op == "|" && next == '=')
             {
                 op.push(next);
                 self.next_char();
+                
+                // Check for triple operators like >>>
+                if op == ">>" {
+                    if let Some(&third) = self.peek_char() {
+                        if third == '>' {
+                            op.push(third);
+                            self.next_char();
+                        }
+                    }
+                }
             }
         }
         op
@@ -743,8 +758,47 @@ impl<'a> Parser<'a> {
     }
 
     fn logic_and(&mut self) -> Result<Expr, ParseError> {
-        let mut expr = self.equality()?;
+        let mut expr = self.bitwise_or()?;
         while let Some(op) = self.match_operator(&["&&"]) {
+            let right = self.bitwise_or()?;
+            expr = Expr::BinaryOp {
+                op,
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+        Ok(expr)
+    }
+
+    fn bitwise_or(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.bitwise_xor()?;
+        while let Some(op) = self.match_operator(&["|"]) {
+            let right = self.bitwise_xor()?;
+            expr = Expr::BinaryOp {
+                op,
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+        Ok(expr)
+    }
+
+    fn bitwise_xor(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.bitwise_and()?;
+        while let Some(op) = self.match_operator(&["^"]) {
+            let right = self.bitwise_and()?;
+            expr = Expr::BinaryOp {
+                op,
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+        Ok(expr)
+    }
+
+    fn bitwise_and(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.equality()?;
+        while let Some(op) = self.match_operator(&["&"]) {
             let right = self.equality()?;
             expr = Expr::BinaryOp {
                 op,
@@ -759,7 +813,7 @@ impl<'a> Parser<'a> {
         let expr = self.logic_or()?;
         
         // Check for assignment operators (both = and compound assignments)
-        if let Some(op) = self.match_operator(&["=", "+=", "-=", "*=", "/="]) {
+        if let Some(op) = self.match_operator(&["=", "+=", "-=", "*=", "/=", "&=", "|=", "^="]) {
             match expr {
                 Expr::Variable(name) => {
                     let value = self.assignment()?;
@@ -778,6 +832,9 @@ impl<'a> Parser<'a> {
                             "-=" => "-",
                             "*=" => "*",
                             "/=" => "/",
+                            "&=" => "&",
+                            "|=" => "|",
+                            "^=" => "^",
                             _ => return self.error("Unknown compound assignment operator"),
                         };
                         
@@ -811,6 +868,9 @@ impl<'a> Parser<'a> {
                             "-=" => "-",
                             "*=" => "*",
                             "/=" => "/",
+                            "&=" => "&",
+                            "|=" => "|",
+                            "^=" => "^",
                             _ => return self.error("Unknown compound assignment operator"),
                         };
                         
@@ -847,6 +907,9 @@ impl<'a> Parser<'a> {
                             "-=" => "-",
                             "*=" => "*",
                             "/=" => "/",
+                            "&=" => "&",
+                            "|=" => "|",
+                            "^=" => "^",
                             _ => return self.error("Unknown compound assignment operator"),
                         };
                         
@@ -887,8 +950,21 @@ impl<'a> Parser<'a> {
     }
 
     fn comparison(&mut self) -> Result<Expr, ParseError> {
-        let mut expr = self.term()?;
+        let mut expr = self.shift()?;
         while let Some(op) = self.match_operator(&["<", "<=", ">", ">="]) {
+            let right = self.shift()?;
+            expr = Expr::BinaryOp {
+                op: op.to_string(),
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+        Ok(expr)
+    }
+
+    fn shift(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.term()?;
+        while let Some(op) = self.match_operator(&["<<", ">>", ">>>"]) {
             let right = self.term()?;
             expr = Expr::BinaryOp {
                 op: op.to_string(),
@@ -926,7 +1002,7 @@ impl<'a> Parser<'a> {
     }
 
     fn unary(&mut self) -> Result<Expr, ParseError> {
-        if let Some(op) = self.match_operator(&["!", "-"]) {
+        if let Some(op) = self.match_operator(&["!", "-", "~"]) {
             let operand = self.unary()?;
             return Ok(Expr::UnaryOp {
                 op: op.to_string(),
@@ -1559,5 +1635,96 @@ mod tests {
             eprintln!("Input: {}", input);
         }
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_bitwise_operators() {
+        let inputs = [
+            "a & b;",           // bitwise AND
+            "a | b;",           // bitwise OR
+            "a ^ b;",           // bitwise XOR
+            "~a;",              // bitwise NOT
+            "a << 2;",          // left shift
+            "a >> 2;",          // right shift
+            "a >>> 2;",         // unsigned right shift
+            "a & b | c;",       // mixed bitwise
+            "a ^ b & c;",       // precedence test
+            "(a & b) | c;",     // precedence with parentheses
+            "~(a | b);",        // unary with parentheses
+        ];
+        
+        for input in inputs {
+            let result = parse(input);
+            if let Err(ref e) = result {
+                eprintln!("Failed to parse bitwise expression: {}", input);
+                eprintln!("Error: {}", e);
+            }
+            assert!(result.is_ok());
+        }
+    }
+
+    #[test]
+    fn test_bitwise_compound_assignments() {
+        let inputs = [
+            "x &= 5;",
+            "y |= 3;",
+            "z ^= 2;",
+            "arr[i] &= mask;",
+            "obj.field |= flag;",
+            "this.value ^= other;",
+        ];
+        
+        for input in inputs {
+            let result = parse(input);
+            if let Err(ref e) = result {
+                eprintln!("Failed to parse bitwise compound assignment: {}", input);
+                eprintln!("Error: {}", e);
+            }
+            assert!(result.is_ok());
+        }
+    }
+
+    #[test]
+    fn test_bitwise_precedence() {
+        let inputs = [
+            "a == b & c;",        // & has lower precedence than ==
+            "a & b == c;",        // & has lower precedence than ==
+            "a + b << 2;",        // << has lower precedence than +
+            "a << 2 + b;",        // << has lower precedence than +
+            "a & b | c ^ d;",     // left-to-right with correct precedence
+            "a || b & c;",        // || has lower precedence than &
+            "a & b || c;",        // || has lower precedence than &
+        ];
+        
+        for input in inputs {
+            let result = parse(input);
+            if let Err(ref e) = result {
+                eprintln!("Failed to parse bitwise precedence expression: {}", input);
+                eprintln!("Error: {}", e);
+            }
+            assert!(result.is_ok());
+        }
+    }
+
+    #[test]
+    fn test_complex_bitwise_expressions() {
+        let inputs = [
+            "flags = (flags & ~mask) | (value & mask);",
+            "result = ((a << 4) | (b >> 2)) ^ c;",
+            "x = ~(a | b) & (c ^ d);",
+            "status |= flag_value;",
+            "permissions &= ~(READ_ONLY | WRITE_ONLY);",
+            "value = (a & 255) << 8 | (b & 255);",
+            "mask = ~0 >>> shift_amount;",
+        ];
+        
+        for input in inputs {
+            let result = parse(input);
+            if let Err(ref e) = result {
+                eprintln!("Failed to parse complex bitwise expression: {}", input);
+                eprintln!("Error: {}", e);
+            }
+            assert!(result.is_ok());
+        }
     }
 }
