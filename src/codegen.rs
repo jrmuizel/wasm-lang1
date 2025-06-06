@@ -78,7 +78,7 @@ impl CodeGenerator {
                 "(ref $Object)"
             };
             let type_name = format!("${}Array", &array_type[..array_type.len()-2]);
-            self.emit_line(&format!("(type {} (array {}))", type_name, elem_type));
+            self.emit_line(&format!("(type {} (array (mut {})))", type_name, elem_type));
         }
 
         // Generate functions and methods
