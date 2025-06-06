@@ -258,6 +258,10 @@ impl<'a> Lexer<'a> {
                 || (op == "&" && next == '&')
                 || (op == "|" && next == '|')
                 || (op == "=" && next == '=')
+                || (op == "+" && next == '=')
+                || (op == "-" && next == '=')
+                || (op == "*" && next == '=')
+                || (op == "/" && next == '=')
             {
                 op.push(next);
                 self.next_char();
@@ -753,31 +757,114 @@ impl<'a> Parser<'a> {
 
     fn assignment(&mut self) -> Result<Expr, ParseError> {
         let expr = self.logic_or()?;
-        if self.match_token(&Token::Operator("=".to_string())) {
+        
+        // Check for assignment operators (both = and compound assignments)
+        if let Some(op) = self.match_operator(&["=", "+=", "-=", "*=", "/="]) {
             match expr {
                 Expr::Variable(name) => {
                     let value = self.assignment()?;
-                    Ok(Expr::BinaryOp {
-                        op: "=".to_string(),
-                        left: Box::new(Expr::Variable(name)),
-                        right: Box::new(value),
-                    })
+                    
+                    if op == "=" {
+                        // Regular assignment
+                        Ok(Expr::BinaryOp {
+                            op: "=".to_string(),
+                            left: Box::new(Expr::Variable(name.clone())),
+                            right: Box::new(value),
+                        })
+                    } else {
+                        // Compound assignment: convert a += b to a = a + b
+                        let binary_op = match op.as_str() {
+                            "+=" => "+",
+                            "-=" => "-",
+                            "*=" => "*",
+                            "/=" => "/",
+                            _ => return self.error("Unknown compound assignment operator"),
+                        };
+                        
+                        let compound_expr = Expr::BinaryOp {
+                            op: binary_op.to_string(),
+                            left: Box::new(Expr::Variable(name.clone())),
+                            right: Box::new(value),
+                        };
+                        
+                        Ok(Expr::BinaryOp {
+                            op: "=".to_string(),
+                            left: Box::new(Expr::Variable(name)),
+                            right: Box::new(compound_expr),
+                        })
+                    }
                 }
                 Expr::FieldAccess { object, field } => {
                     let value = self.assignment()?;
-                    Ok(Expr::BinaryOp {
-                        op: "=".to_string(),
-                        left: Box::new(Expr::FieldAccess { object, field }),
-                        right: Box::new(value),
-                    })
+                    
+                    if op == "=" {
+                        // Regular assignment
+                        Ok(Expr::BinaryOp {
+                            op: "=".to_string(),
+                            left: Box::new(Expr::FieldAccess { object, field }),
+                            right: Box::new(value),
+                        })
+                    } else {
+                        // Compound assignment: convert obj.field += b to obj.field = obj.field + b
+                        let binary_op = match op.as_str() {
+                            "+=" => "+",
+                            "-=" => "-",
+                            "*=" => "*",
+                            "/=" => "/",
+                            _ => return self.error("Unknown compound assignment operator"),
+                        };
+                        
+                        let compound_expr = Expr::BinaryOp {
+                            op: binary_op.to_string(),
+                            left: Box::new(Expr::FieldAccess { 
+                                object: object.clone(), 
+                                field: field.clone() 
+                            }),
+                            right: Box::new(value),
+                        };
+                        
+                        Ok(Expr::BinaryOp {
+                            op: "=".to_string(),
+                            left: Box::new(Expr::FieldAccess { object, field }),
+                            right: Box::new(compound_expr),
+                        })
+                    }
                 }
                 Expr::ArrayAccess { array, index } => {
                     let value = self.assignment()?;
-                    Ok(Expr::BinaryOp {
-                        op: "=".to_string(),
-                        left: Box::new(Expr::ArrayAccess { array, index }),
-                        right: Box::new(value),
-                    })
+                    
+                    if op == "=" {
+                        // Regular assignment
+                        Ok(Expr::BinaryOp {
+                            op: "=".to_string(),
+                            left: Box::new(Expr::ArrayAccess { array, index }),
+                            right: Box::new(value),
+                        })
+                    } else {
+                        // Compound assignment: convert arr[i] += b to arr[i] = arr[i] + b
+                        let binary_op = match op.as_str() {
+                            "+=" => "+",
+                            "-=" => "-",
+                            "*=" => "*",
+                            "/=" => "/",
+                            _ => return self.error("Unknown compound assignment operator"),
+                        };
+                        
+                        let compound_expr = Expr::BinaryOp {
+                            op: binary_op.to_string(),
+                            left: Box::new(Expr::ArrayAccess { 
+                                array: array.clone(), 
+                                index: index.clone() 
+                            }),
+                            right: Box::new(value),
+                        };
+                        
+                        Ok(Expr::BinaryOp {
+                            op: "=".to_string(),
+                            left: Box::new(Expr::ArrayAccess { array, index }),
+                            right: Box::new(compound_expr),
+                        })
+                    }
                 }
                 _ => self.error("Invalid assignment target"),
             }
@@ -1416,5 +1503,61 @@ mod tests {
         }
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn test_while_loop_with_array_assignment() {
+        let input = "while (r != 1) { count[r-1] = r; r = r - 1; }";
+        let result = parse(input);
+        if let Err(ref e) = result {
+            eprintln!("Failed to parse while loop with array assignment: {}", e);
+            eprintln!("Input: {}", input);
+        }
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_compound_assignments() {
+        let inputs = [
+            "x += 5;",
+            "y -= 3;",
+            "z *= 2;",
+            "w /= 4;",
+            "arr[i] += 1;",
+            "obj.field -= 2;",
+            "count[r-1] *= 3;",
+        ];
+        
+        for input in inputs {
+            let result = parse(input);
+            if let Err(ref e) = result {
+                eprintln!("Failed to parse compound assignment: {}", input);
+                eprintln!("Error: {}", e);
+            }
+            assert!(result.is_ok());
+        }
+    }
+
+    #[test]
+    fn test_while_loop_with_compound_assignments() {
+        let input = "while (r != 1) { count[r-1] = r; r -= 1; }";
+        let result = parse(input);
+        if let Err(ref e) = result {
+            eprintln!("Failed to parse while loop with compound assignment: {}", e);
+            eprintln!("Input: {}", input);
+        }
+        assert!(result.is_ok());
+    }
     
+    #[test]
+    fn test_compound_assignment_direct() {
+        let input = "x += 1;";
+        let lexer = Lexer::new(input);
+        let mut parser = Parser::new(lexer);
+        let result = parser.parse();
+        if let Err(ref e) = result {
+            eprintln!("Failed to parse compound assignment directly: {}", e);
+            eprintln!("Input: {}", input);
+        }
+        assert!(result.is_ok());
+    }
 }
