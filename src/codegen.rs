@@ -224,7 +224,7 @@ impl CodeGenerator {
             Stmt::VariableDecl { name, init, .. } => {
                 // Already added to locals in Block
                 if let Some(expr) = init {
-                    let value = self.generate_expr(expr);
+                    let value = self.generate_expr(&expr);
                     self.emit(&format!("(local.set ${} ({}))\n", name, value));
                 }
             }
@@ -627,16 +627,8 @@ mod tests {
     use wat::parse_str;
 
     fn parse(input: &str) -> Vec<Stmt> {
-        let mut lexer = Lexer::new(input);
-        let mut tokens = Vec::new();
-        loop {
-            let token = lexer.next_token();
-            if token == crate::parser::Token::EndOfInput {
-                break;
-            }
-            tokens.push(token);
-        }
-        let mut parser = Parser::new(tokens);
+        let lexer = crate::parser::Lexer::new(input);
+        let mut parser = crate::parser::Parser::new(lexer);
         parser.parse().unwrap()
     }
 

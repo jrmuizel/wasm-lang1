@@ -1,5 +1,6 @@
 use std::iter::Peekable;
 use std::str::Chars;
+use std::collections::VecDeque;
 
 // Token definitions
 #[derive(Debug, PartialEq, Clone)]
@@ -268,14 +269,84 @@ impl<'a> Lexer<'a> {
 }
 
 // Parser implementation
-pub struct Parser {
-    tokens: Vec<Token>,
-    current: usize,
+pub struct Parser<'a> {
+    lexer: Lexer<'a>,
+    lookahead: VecDeque<Token>,
 }
 
-impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, current: 0 }
+impl<'a> Parser<'a> {
+    pub fn new(lexer: Lexer<'a>) -> Self {
+        Parser {
+            lexer,
+            lookahead: VecDeque::new(),
+        }
+    }
+
+    // Ensure at least n+1 tokens are in the lookahead buffer
+    fn fill_lookahead(&mut self, n: usize) {
+        while self.lookahead.len() <= n {
+            let token = self.lexer.next_token();
+            let is_end = matches!(token, Token::EndOfInput);
+            self.lookahead.push_back(token);
+            if is_end {
+                break;
+            }
+        }
+    }
+
+    fn advance(&mut self) -> Option<Token> {
+        self.fill_lookahead(0);
+        self.lookahead.pop_front()
+    }
+
+    fn peek(&mut self) -> Option<Token> {
+        self.fill_lookahead(0);
+        self.lookahead.get(0).cloned()
+    }
+
+    fn peek_n(&mut self, n: usize) -> Option<Token> {
+        self.fill_lookahead(n);
+        self.lookahead.get(n).cloned()
+    }
+
+    fn peek_next(&mut self) -> Option<Token> {
+        self.peek_n(1)
+    }
+
+    fn is_at_end(&mut self) -> bool {
+        matches!(self.peek(), Some(Token::EndOfInput) | None)
+    }
+
+    fn check(&mut self, token: &Token) -> bool {
+        self.peek().map_or(false, |t| t == *token)
+    }
+
+    fn match_token(&mut self, token: &Token) -> bool {
+        if self.check(token) {
+            self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn match_operator(&mut self, ops: &[&str]) -> Option<String> {
+        if let Some(Token::Operator(op)) = self.peek() {
+            if ops.contains(&op.as_str()) {
+                self.advance();
+                return Some(op);
+            }
+        }
+        None
+    }
+
+    fn consume(&mut self, token: &Token, message: &str) -> Result<(), String> {
+        if self.check(token) {
+            self.advance();
+            Ok(())
+        } else {
+            Err(message.to_string())
+        }
     }
 
     pub fn parse(&mut self) -> Result<Vec<Stmt>, String> {
@@ -772,64 +843,6 @@ impl Parser {
         })
     }
 
-    // Helper methods
-    fn advance(&mut self) -> Option<Token> {
-        if !self.is_at_end() {
-            self.current += 1;
-        }
-        self.tokens.get(self.current - 1).cloned()
-    }
-
-    fn consume(&mut self, token: &Token, message: &str) -> Result<(), String> {
-        if self.check(token) {
-            self.advance();
-            Ok(())
-        } else {
-            Err(message.to_string())
-        }
-    }
-
-    fn check(&self, token: &Token) -> bool {
-        self.peek().map_or(false, |t| t == *token)
-    }
-
-    fn match_token(&mut self, token: &Token) -> bool {
-        if self.check(token) {
-            self.advance();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn match_operator(&mut self, ops: &[&str]) -> Option<String> {
-        if let Some(Token::Operator(op)) = self.peek() {
-            if ops.contains(&op.as_str()) {
-                self.advance();
-                return Some(op);
-            }
-        }
-        None
-    }
-
-    fn peek(&self) -> Option<Token> {
-        self.tokens.get(self.current).cloned()
-    }
-
-    fn is_at_end(&self) -> bool {
-        matches!(self.peek(), Some(Token::EndOfInput) | None)
-    }
-
-    // Add helper method to peek n tokens ahead
-    fn peek_n(&self, n: usize) -> Option<Token> {
-        self.tokens.get(self.current + n).cloned()
-    }
-
-    // Add helper method to peek next token
-    fn peek_next(&self) -> Option<Token> {
-        self.peek_n(1)
-    }
-
     // Add a helper to parse types, supporting array types like int[]
     fn parse_type(&mut self) -> Result<String, String> {
         let base_type = match self.advance() {
@@ -863,43 +876,21 @@ fn main() {
         }
     "#;
 
-    // Tokenize input
-    let mut lexer = Lexer::new(input);
-    let mut tokens = Vec::new();
-    loop {
-        let token = lexer.next_token();
-        if token == Token::EndOfInput {
-            break;
-        }
-        tokens.push(token);
-    }
-
-    // Parse tokens
-    let mut parser = Parser::new(tokens);
+    let lexer = Lexer::new(input);
+    let mut parser = Parser::new(lexer);
     match parser.parse() {
         Ok(ast) => println!("{:#?}", ast),
         Err(e) => eprintln!("Parse error: {}", e),
     }
 }
 
-
-// Add this at the bottom of the file
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn parse(input: &str) -> Result<Vec<Stmt>, String> {
-        let mut lexer = Lexer::new(input);
-        let mut tokens = Vec::new();
-        loop {
-            let token = lexer.next_token();
-            if token == Token::EndOfInput {
-                break;
-            }
-            tokens.push(token);
-        }
-        let mut parser = Parser::new(tokens);
+        let lexer = Lexer::new(input);
+        let mut parser = Parser::new(lexer);
         let ast = parser.parse();
         if ast.is_err() {
             eprintln!("Parse error: {}", ast.as_ref().err().unwrap());

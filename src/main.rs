@@ -28,19 +28,8 @@ fn main() {
         }
     "#;
 
-    // Tokenize input
-    let mut lexer = Lexer::new(input);
-    let mut tokens = Vec::new();
-    loop {
-        let token = lexer.next_token();
-        if token == Token::EndOfInput {
-            break;
-        }
-        tokens.push(token);
-    }
-
-    // Parse tokens
-    let mut parser = Parser::new(tokens);
+    let lexer = parser::Lexer::new(input);
+    let mut parser = parser::Parser::new(lexer);
     match parser.parse() {
         Ok(ast) => {
             println!("{:#?}", ast);
