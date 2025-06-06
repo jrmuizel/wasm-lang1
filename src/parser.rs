@@ -438,14 +438,27 @@ impl<'a> Parser<'a> {
             },
             Some(Token::Identifier(_)) => {
                 // Look ahead to see if this is a declaration or expression
-                match (self.peek_next(), self.peek_n(2)) {
-                    // Function declaration: Type Name (
-                    (Some(Token::Identifier(_)), Some(Token::Delimiter('('))) => self.function_decl(),
-                    // Variable declaration: Type Name [= or ;]
-                    (Some(Token::Identifier(_)), Some(Token::Operator(ref op))) if op == "=" => self.variable_decl(),
-                    (Some(Token::Identifier(_)), Some(Token::Delimiter(';'))) => self.variable_decl(),
-                    // Expression statement
-                    _ => self.expression_statement(),
+                let mut idx = 1;
+                // Skip any number of [] for array types
+                while self.peek_n(idx) == Some(Token::Delimiter('[')) && self.peek_n(idx+1) == Some(Token::Delimiter(']')) {
+                    idx += 2;
+                }
+                let is_function = match (self.peek_n(idx), self.peek_n(idx+1)) {
+                    (Some(Token::Identifier(_)), Some(Token::Delimiter('('))) => true,
+                    _ => false,
+                };
+                let is_variable = match (self.peek_n(idx), self.peek_n(idx+1)) {
+                    (Some(Token::Identifier(_)), Some(Token::Operator(ref op))) if op == "=" => true,
+                    (Some(Token::Identifier(_)), Some(Token::Delimiter(';'))) => true,
+                    _ => false,
+                };
+                
+                if is_function {
+                    self.function_decl()
+                } else if is_variable {
+                    self.variable_decl()
+                } else {
+                    self.expression_statement()
                 }
             },
             Some(Token::Delimiter('{')) => self.block(),
@@ -1300,5 +1313,38 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.line, 1);
         assert!(err.column >= 7 && err.column <= 9, "column was {}", err.column);
+    }
+
+    #[test]
+    fn test_custom_class_array() {
+        let input = r#"
+            class Point { int x; int y; }
+            Point[] points = new Point[5];
+        "#;
+        let result = parse(input);
+        if let Err(ref e) = result {
+            eprintln!("Failed to parse custom class array: {}", e);
+        }
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_new_custom_class_array_expression() {
+        let input = "new Point[5];";
+        let result = parse(input);
+        if let Err(ref e) = result {
+            eprintln!("Failed to parse new custom class array expression: {}", e);
+        }
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_custom_class_array_variable_declaration() {
+        let input = "Point[] points;";
+        let result = parse(input);
+        if let Err(ref e) = result {
+            eprintln!("Failed to parse custom class array variable declaration: {}", e);
+        }
+        assert!(result.is_ok());
     }
 }

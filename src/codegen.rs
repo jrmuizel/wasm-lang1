@@ -67,15 +67,15 @@ impl CodeGenerator {
         }
         for array_type in &array_types {
             let elem_type = if array_type.starts_with("int") {
-                "i32"
+                "i32".to_string()
             } else if array_type.starts_with("boolean") {
-                "i32"
+                "i32".to_string()
             } else if array_type.starts_with("String") {
-                "(ref $String)"
+                "(ref null $String)".to_string()
             } else if self.classes.contains_key(&array_type[..array_type.len()-2]) {
-                &format!("(ref ${})", &array_type[..array_type.len()-2])
+                format!("(ref null ${})", &array_type[..array_type.len()-2])
             } else {
-                "(ref $Object)"
+                "(ref null $Object)".to_string()
             };
             let type_name = format!("${}Array", &array_type[..array_type.len()-2]);
             self.emit_line(&format!("(type {} (array (mut {})))", type_name, elem_type));
@@ -168,7 +168,7 @@ impl CodeGenerator {
         let prev_class = self.current_class.clone();
         self.current_class = Some(class_name.to_string());
         self.emit(&format!("(func ${}.{}", class_name, method_name));
-        self.emit(&format!(" (param $this (ref ${}))", class_name));
+        self.emit(&format!(" (param $this (ref null ${}))", class_name));
         let mut locals_map = std::collections::HashMap::new();
         locals_map.insert("this".to_string(), class_name.to_string());
         for (param_type, param_name) in params.iter() {
@@ -388,10 +388,10 @@ impl CodeGenerator {
                     let len_expr = self.generate_expr(&args[0]);
                     // Default initialize to 0 or null
                     let default_val = match elem_type {
-                        "int" | "boolean" => "i32.const 0".to_string(),
-                        "String" => "ref.null $String".to_string(),
-                        s if self.classes.contains_key(s) => format!("ref.null ${}", s),
-                        _ => "ref.null $Object".to_string(),
+                        "int" | "boolean" => "(i32.const 0)".to_string(),
+                        "String" => "(ref.null $String)".to_string(),
+                        s if self.classes.contains_key(s) => format!("(ref.null ${})", s),
+                        _ => "(ref.null $Object)".to_string(),
                     };
                     format!("array.new {} {} {}", type_name, default_val, len_expr)
                 } else {
@@ -450,6 +450,22 @@ impl CodeGenerator {
                 self.current_class.clone().unwrap_or_else(|| "Object".to_string())
             },
             Expr::FieldAccess { object, .. } => self.get_class_name(object),
+            Expr::ArrayAccess { array, .. } => {
+                // For array access, get the element type
+                if let Expr::Variable(array_name) = &**array {
+                    for locals in self.local_vars_stack.iter().rev() {
+                        if let Some(var_type) = locals.get(array_name) {
+                            if var_type.ends_with("[]") {
+                                let elem_type = &var_type[..var_type.len() - 2];
+                                if self.classes.contains_key(elem_type) {
+                                    return elem_type.to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+                "Object".to_string()
+            }
             _ => "Object".to_string(),
         }
     }
@@ -471,12 +487,12 @@ impl CodeGenerator {
             match t {
                 "int" => "i32".to_string(),
                 "boolean" => "i32".to_string(),
-                "String" => "(ref $String)".to_string(),
+                "String" => "(ref null $String)".to_string(),
                 "void" => "".to_string(),
                 s if self.classes.contains_key(s) => {
-                    format!("(ref ${})", s)
+                    format!("(ref null ${})", s)
                 }
-                _ => "(ref $Object)".to_string(),
+                _ => "(ref null $Object)".to_string(),
             }
         }
     }
@@ -912,6 +928,29 @@ mod tests {
         "#;
         let result = compile_and_run(input);
         assert_eq!(result, "42");
+    }
+
+    #[test]
+    fn codegen_execution_array_of_objects() {
+        let input = r#"
+            class Point {
+                int x;
+                int y;
+            }
+            void main() {
+                Point[] points = new Point[3];
+                points[0] = new Point();
+                points[0].x = 10;
+                points[0].y = 20;
+                points[1] = new Point();
+                points[1].x = 5;
+                points[1].y = 15;
+                Point p = points[0];
+                print(p.x + p.y + points[1].x + points[1].y); // Should print 50 (10+20+5+15)
+            }
+        "#;
+        let result = compile_and_run(input);
+        assert_eq!(result, "50");
     }
 
 }
