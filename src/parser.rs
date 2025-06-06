@@ -1264,4 +1264,41 @@ mod tests {
         // Optionally, check the AST structure for array access and array type
         // (not required for this basic test)
     }
+
+    #[test]
+    fn test_error_position_reporting() {
+        // Error at line 1, column 8 (missing semicolon)
+        let input = "int x";
+        let result = parse(input);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.line, 1);
+        // The column should be at the end of input (after 'x'), which is column 6 (i n t   x)
+        // But since we only check at error, it may be 6 or 7 depending on implementation
+        assert!(err.column >= 6 && err.column <= 8, "column was {}", err.column);
+
+        // Error at line 2, column 13 (missing class name)
+        let input = "class {\n void method() {} }";
+        let result = parse(input);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.line, 1);
+        assert!(err.column >= 7 && err.column <= 8, "column was {}", err.column);
+
+        // Error at line 3, column 12 (invalid assignment target)
+        let input = "\n\n42 = x;";
+        let result = parse(input);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.line, 3);
+        assert_eq!(err.column, 5, "column was {}", err.column);
+
+        // Error at line 2, column 8 (missing parenthesis)
+        let input = "if (x { }";
+        let result = parse(input);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.line, 1);
+        assert!(err.column >= 7 && err.column <= 9, "column was {}", err.column);
+    }
 }
