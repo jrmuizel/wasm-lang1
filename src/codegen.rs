@@ -304,7 +304,7 @@ impl CodeGenerator {
                         let value = self.generate_expr(right);
                         // Use struct.set for field assignment
                         let class_name = self.get_class_name(object);
-                        format!("struct.set ${} ${} ({}) {}\n", class_name, field, obj, value)
+                        format!("struct.set ${} ${} ({}) ({})\n", class_name, field, obj, value)
                     } else {
                         panic!("Assignment left side must be a variable or field");
                     }
@@ -347,10 +347,10 @@ impl CodeGenerator {
                 let obj_code = self.generate_expr(object);
                 let mut call_args = String::new();
                 for arg in args {
-                    call_args.push_str(&format!("{} ", self.generate_expr(arg)));
+                    call_args.push_str(&format!("({}) ", self.generate_expr(arg)));
                 }
                 let class_name = self.get_class_name(object);
-                format!("call ${}.{} {}{}", class_name, method, obj_code, call_args)
+                format!("call ${}.{} ({}) {}", class_name, method, obj_code, call_args)
             }
             Expr::New { class_name, args } => {
                 let mut init_args = String::new();
@@ -894,5 +894,76 @@ mod tests {
         main.call(&mut store, &[], &mut []).expect("main should run");
         let out = output.lock().unwrap();
         assert_eq!(*out, vec![99]);
+    }
+
+    #[test]
+    fn codegen_execution_complex_program() {
+        use wasmtime::{Engine, Module, Store, Linker, Config};
+        use std::sync::{Arc, Mutex};
+
+        let input = r#"
+            class Accumulator {
+                int sum;
+                void add(int x) {
+                    this.sum = this.sum + x;
+                }
+            }
+            int factorial(int n) {
+                int result = 1;
+                while (n > 1) {
+                    result = result * n;
+                    n = n - 1;
+                }
+                return result;
+            }
+            void main() {
+                Accumulator acc = new Accumulator();
+                int i = 1;
+                while (i <= 5) {
+                    acc.add(factorial(i));
+                    i = i + 1;
+                }
+                print(acc.sum); // Should print 153 (1!+2!+3!+4!+5!)
+            }
+        "#;
+        let ast = parse(input);
+        let mut codegen = CodeGenerator::new();
+        let wat = codegen.generate(ast);
+        println!("\n===== GENERATED WAT FOR COMPLEX PROGRAM TEST =====\n{}\n===== END GENERATED WAT =====\n", wat);
+        let wasm = wat::parse_str(&wat).expect("Generated WAT should be valid");
+        let output = Arc::new(Mutex::new(Vec::<i32>::new()));
+        let mut config = Config::new();
+        config.wasm_multi_memory(true);
+        config.wasm_gc(true);
+        let engine = Engine::new(&config).unwrap();
+        let module = Module::from_binary(&engine, &wasm).unwrap();
+        let mut linker = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        linker.func_wrap("host", "printInt", {
+            let output = output.clone();
+            move |val: i32| {
+                output.lock().unwrap().push(val);
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printBool", {
+            let _output = output.clone();
+            move |_val: i32| {
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printFloat", {
+            let _output = output.clone();
+            move |_val: f32| {
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printString", {
+            move |_val: Rooted<ArrayRef>| {
+                // For test purposes, do nothing
+            }
+        }).unwrap();
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+        let main = instance.get_func(&mut store, "main").expect("main function");
+        main.call(&mut store, &[], &mut []).expect("main should run");
+        let out = output.lock().unwrap();
+        assert_eq!(*out, vec![153]);
     }
 }
