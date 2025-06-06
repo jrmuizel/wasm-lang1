@@ -78,12 +78,7 @@ impl CodeGenerator {
                     self.emit(&format!("(global ${} (mut {})", name, wasm_type));
                     if let Some(expr) = init {
                         let value = self.generate_expr(&expr);
-                        let value_expr = if value.trim_start().starts_with('(') {
-                            value
-                        } else {
-                            format!("({})", value)
-                        };
-                        self.emit(&format!("(global.set ${} {})\n", name, value_expr));
+                        self.emit(&format!("(global.set ${} ({}))\n", name, value));
                     }
                 }
                 _ => {}
@@ -127,7 +122,7 @@ impl CodeGenerator {
         // Emit local variable declarations
         let locals = self.collect_locals(body, &locals_map.keys().cloned().collect());
         for (name, var_type) in &locals {
-            self.emit(&format!(" (local ${} {})", name, self.type_to_wasm(var_type)));
+            self.emit(&format!(" (local ${} {})\n", name, self.type_to_wasm(var_type)));
             locals_map.insert(name.clone(), var_type.clone());
         }
         self.indent_level += 1;
@@ -172,7 +167,7 @@ impl CodeGenerator {
         // Emit local variable declarations
         let locals = self.collect_locals(body, &locals_map.keys().cloned().collect());
         for (name, var_type) in &locals {
-            self.emit(&format!(" (local ${} {})", name, self.type_to_wasm(var_type)));
+            self.emit(&format!(" (local ${} {})\n", name, self.type_to_wasm(var_type)));
             locals_map.insert(name.clone(), var_type.clone());
         }
         self.indent_level += 1;
@@ -209,22 +204,12 @@ impl CodeGenerator {
                 // Already added to locals in Block
                 if let Some(expr) = init {
                     let value = self.generate_expr(expr);
-                    let value_expr = if value.trim_start().starts_with('(') {
-                        value
-                    } else {
-                        format!("({})", value)
-                    };
-                    self.emit(&format!("(local.set ${} {})\n", name, value_expr));
+                    self.emit(&format!("(local.set ${} ({}))\n", name, value));
                 }
             }
             Stmt::Assignment { name, value } => {
-                let expr_value = self.generate_expr(value);
-                let value_expr = if expr_value.trim_start().starts_with('(') {
-                    expr_value
-                } else {
-                    format!("({})", expr_value)
-                };
-                self.emit(&format!("(global.set ${} {})\n", name, value_expr));
+                let value = self.generate_expr(value);
+                self.emit(&format!("(global.set ${} ({}))\n", name, value));
             }
             Stmt::If { condition, then_block, else_block } => {
                 let cond = self.generate_expr(condition);
@@ -245,7 +230,7 @@ impl CodeGenerator {
                 self.emit_line("(block");
                 self.emit_line("(loop");
                 let cond = self.generate_expr(condition);
-                self.emit(&format!("(br_if 1 (i32.eqz {}))\n", cond));
+                self.emit(&format!("(br_if 1 (i32.eqz ({})))\n", cond));
                 self.generate_stmt(body);
                 self.emit_line("(br 0)");
                 self.emit_line(")");
@@ -261,19 +246,19 @@ impl CodeGenerator {
                     _ => "$printInt", // Default to int for now
                 };
                 // Emit the value first, then the call
-                self.emit(&format!("{}\n(call {})\n", value, print_func));
+                self.emit(&format!("(call {} ({}))\n", print_func, value));
             }
             Stmt::Return { value } => {
                 if let Some(expr) = value {
                     let ret_value = self.generate_expr(expr);
-                    self.emit(&format!("{}\nreturn\n", ret_value));
+                    self.emit(&format!("(return ({}))\n", ret_value));
                 } else {
-                    self.emit_line("return");
+                    self.emit_line("(return)");
                 }
             }
             Stmt::Expression(expr) => {
                 let value = self.generate_expr(expr);
-                self.emit(&format!("{}\n", value));
+                self.emit(&format!("({})\n", value));
             }
             _ => {}
         }
@@ -287,10 +272,10 @@ impl CodeGenerator {
                 // Try to use array.new_fixed if available
                 if s.is_empty() {
                     // Empty string: just create an empty array
-                    format!("(array.new $String (i32.const 0) (i32.const 0))")
+                    format!("array.new $String (i32.const 0) (i32.const 0)")
                 } else {
                     let values = s.chars().map(|c| format!("i32.const {}", c as u32)).collect::<Vec<_>>().join(" ");
-                    format!("(array.new_fixed $String {} {})", s.len(), values)
+                    format!("array.new_fixed $String {} {}", s.len(), values)
                 }
             }
             Expr::Variable(name) => {
@@ -313,25 +298,13 @@ impl CodeGenerator {
                     // Assignment expression: left must be a variable or field access
                     if let Expr::Variable(name) = &**left {
                         let value = self.generate_expr(right);
-                        let value_expr = if value.trim_start().starts_with('(') {
-                            value
-                        } else {
-                            format!("({})", value)
-                        };
-                        self.emit(&format!("(local.set ${} {})\n", name, value_expr));
-                        String::new()
+                        format!("local.set ${} ({})\n", name, value)
                     } else if let Expr::FieldAccess { object, field } = &**left {
                         let obj = self.generate_expr(object);
                         let value = self.generate_expr(right);
                         // Use struct.set for field assignment
                         let class_name = self.get_class_name(object);
-                        let value_expr = if value.trim_start().starts_with('(') {
-                            value
-                        } else {
-                            format!("({})", value)
-                        };
-                        self.emit(&format!("(struct.set ${} ${} ({}) {})\n", class_name, field, obj, value_expr));
-                        String::new()
+                        format!("struct.set ${} ${} ({}) {}\n", class_name, field, obj, value)
                     } else {
                         panic!("Assignment left side must be a variable or field");
                     }
@@ -354,7 +327,7 @@ impl CodeGenerator {
                         _ => panic!("Unsupported operator: {}", op),
                     };
                     // Emit operands first, then operator
-                    format!("{}\n{}\n{}", left_expr, right_expr, op_code)
+                    format!("{} ({}) ({})", op_code, left_expr, right_expr)
                 }
             }
             Expr::UnaryOp { op, operand } => {
@@ -368,7 +341,7 @@ impl CodeGenerator {
             Expr::FieldAccess { object, field } => {
                 let obj = self.generate_expr(object);
                 // Emit as S-expression: (struct.get $Type $field (<object_expr>))
-                format!("(struct.get ${} ${} ({}))", self.get_class_name(object), field, obj)
+                format!("struct.get ${} ${} ({})", self.get_class_name(object), field, obj)
             }
             Expr::MethodCall { object, method, args } => {
                 let obj_code = self.generate_expr(object);
@@ -377,7 +350,7 @@ impl CodeGenerator {
                     call_args.push_str(&format!("{} ", self.generate_expr(arg)));
                 }
                 let class_name = self.get_class_name(object);
-                format!("(call ${}.{} {}{})", class_name, method, obj_code, call_args)
+                format!("call ${}.{} {}{}", class_name, method, obj_code, call_args)
             }
             Expr::New { class_name, args } => {
                 let mut init_args = String::new();
@@ -399,10 +372,10 @@ impl CodeGenerator {
             Expr::FunctionCall { name, args } => {
                 let mut call_args = String::new();
                 for arg in args {
-                    call_args.push_str(&format!("{}\n", self.generate_expr(arg)));
+                    call_args.push_str(&format!("({}) \n", self.generate_expr(arg)));
                 }
                 // Emit arguments, then call
-                format!("{}call ${}", call_args, name)
+                format!("call ${} {}", name, call_args)
             },
             _ => "".to_string(),
         }
