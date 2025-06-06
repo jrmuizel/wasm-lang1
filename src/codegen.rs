@@ -642,27 +642,35 @@ mod tests {
         let mut store = Store::new(&engine, ());
 
         // Capture print output
-        let output = Arc::new(Mutex::new(Vec::<i32>::new()));
+        let output = Arc::new(Mutex::new(String::new()));
 
         linker.func_wrap("host", "printInt", {
             let output = output.clone();
             move |val: i32| {
-                output.lock().unwrap().push(val);
+                let mut out = output.lock().unwrap();
+                out.push_str(&val.to_string());
             }
         }).unwrap();
         linker.func_wrap("host", "printBool", {
             let output = output.clone();
             move |val: i32| {
-                output.lock().unwrap().push(val);
+                let mut out = output.lock().unwrap();
+                out.push_str(&val.to_string());
             }
         }).unwrap();
         linker.func_wrap("host", "printFloat", {
-            let _output = output.clone();
-            move |_val: f32| {
+            let output = output.clone();
+            move |val: f32| {
+                let mut out = output.lock().unwrap();
+                out.push_str(&val.to_string());
             }
         }).unwrap();
         linker.func_wrap("host", "printString", {
+            // This is a stub; actual string extraction from memory would be needed for real output.
+            let output = output.clone();
             move |_val: Rooted<ArrayRef>| {
+                let mut out = output.lock().unwrap();
+                out.push_str("<string>");
             }
         }).unwrap();
 
@@ -670,8 +678,7 @@ mod tests {
         let main = instance.get_func(&mut store, "main").expect("main function");
         main.call(&mut store, &[], &mut []).expect("main should run");
 
-        let out = output.lock().unwrap();
-        out.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")
+        output.lock().unwrap().clone()
     }
 
     #[test]
