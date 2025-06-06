@@ -89,6 +89,12 @@ pub enum Stmt {
         condition: Expr,
         body: Box<Stmt>,
     },
+    For {
+        init: Option<Box<Stmt>>,
+        condition: Option<Expr>,
+        increment: Option<Expr>,
+        body: Box<Stmt>,
+    },
     Block(Vec<Stmt>),
     Expression(Expr),
     Print(Expr),
@@ -172,7 +178,7 @@ impl<'a> Lexer<'a> {
                 _ if c.is_alphabetic() => {
                     let ident = self.read_identifier();
                     match ident.as_str() {
-                        "int" | "boolean" | "String" | "if" | "else" | "while" | "print" => {
+                        "int" | "boolean" | "String" | "if" | "else" | "while" | "for" | "print" => {
                             Token::Keyword(ident)
                         }
                         "true" => Token::LiteralBool(true),
@@ -433,6 +439,7 @@ impl<'a> Parser<'a> {
                 }
                 "if" => self.if_statement(),
                 "while" => self.while_statement(),
+                "for" => self.for_statement(),
                 "print" => self.print_statement(),
                 _ => self.expression_statement(),
             },
@@ -606,6 +613,46 @@ impl<'a> Parser<'a> {
         let body = self.statement()?;
         Ok(Stmt::While {
             condition,
+            body: Box::new(body),
+        })
+    }
+
+    fn for_statement(&mut self) -> Result<Stmt, ParseError> {
+        self.consume(&Token::Keyword("for".to_string()), "Expected 'for'")?;
+        self.consume(&Token::Delimiter('('), "Expected '(' after 'for'")?;
+        
+        // Parse init statement (optional)
+        let init = if self.check(&Token::Delimiter(';')) {
+            None
+        } else {
+            Some(Box::new(self.statement()?))
+        };
+        
+        if init.is_none() {
+            self.consume(&Token::Delimiter(';'), "Expected ';' after for init")?;
+        }
+        
+        // Parse condition (optional)
+        let condition = if self.check(&Token::Delimiter(';')) {
+            None
+        } else {
+            Some(self.expression()?)
+        };
+        self.consume(&Token::Delimiter(';'), "Expected ';' after for condition")?;
+        
+        // Parse increment (optional)
+        let increment = if self.check(&Token::Delimiter(')')) {
+            None
+        } else {
+            Some(self.expression()?)
+        };
+        self.consume(&Token::Delimiter(')'), "Expected ')' after for increment")?;
+        
+        let body = self.statement()?;
+        Ok(Stmt::For {
+            init,
+            condition,
+            increment,
             body: Box::new(body),
         })
     }
@@ -1013,6 +1060,26 @@ mod tests {
     }
 
     #[test]
+    fn test_for_loop() {
+        let inputs = [
+            "for (int i = 0; i < 10; i = i + 1) { print(i); }",
+            "for (; i < 10; i = i + 1) { print(i); }",
+            "for (int i = 0;; i = i + 1) { print(i); }",
+            "for (int i = 0; i < 10;) { print(i); }",
+            "for (;;) { print(42); }",
+        ];
+        
+        for input in inputs {
+            let result = parse(input);
+            if let Err(ref e) = result {
+                eprintln!("Failed to parse: {}", input);
+                eprintln!("Error: {}", e);
+            }
+            assert!(result.is_ok());
+        }
+    }
+
+    #[test]
     fn test_print_statement() {
         let input = r#"print("Hello, world!");"#;
         assert!(parse(input).is_ok());
@@ -1278,6 +1345,8 @@ mod tests {
         // (not required for this basic test)
     }
 
+
+
     #[test]
     fn test_error_position_reporting() {
         // Error at line 1, column 8 (missing semicolon)
@@ -1347,4 +1416,5 @@ mod tests {
         }
         assert!(result.is_ok());
     }
+    
 }

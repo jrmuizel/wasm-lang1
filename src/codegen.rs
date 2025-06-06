@@ -257,6 +257,36 @@ impl CodeGenerator {
                 self.emit_line(")");
                 self.emit_line(")");
             }
+            Stmt::For { init, condition, increment, body } => {
+                // Generate init statement if present
+                if let Some(init_stmt) = init {
+                    self.generate_stmt(init_stmt);
+                }
+                
+                // Generate the loop structure
+                self.emit_line("(block");
+                self.emit_line("(loop");
+                
+                // Generate condition check if present (default to true if none)
+                if let Some(cond) = condition {
+                    let cond = self.generate_expr(cond);
+                    self.emit(&format!("(br_if 1 (i32.eqz ({})))\n", cond));
+                }
+                
+                // Generate body
+                self.generate_stmt(body);
+                
+                // Generate increment if present
+                if let Some(inc) = increment {
+                    let inc_code = self.generate_expr(inc);
+                    self.emit(&format!("({})\n", inc_code));
+                }
+                
+                // Loop back
+                self.emit_line("(br 0)");
+                self.emit_line(")");
+                self.emit_line(")");
+            }
             Stmt::Print(expr) => {
                 let value = self.generate_expr(expr);
                 // Determine the type of the expression for correct print function
@@ -547,6 +577,12 @@ impl CodeGenerator {
             Stmt::While { body, .. } => {
                 self.collect_locals_recursive(body, param_names, locals);
             }
+            Stmt::For { init, body, .. } => {
+                if let Some(init_stmt) = init {
+                    self.collect_locals_recursive(init_stmt, param_names, locals);
+                }
+                self.collect_locals_recursive(body, param_names, locals);
+            }
             Stmt::Expression(_) | Stmt::Assignment { .. } | Stmt::Print(_) | Stmt::Return { .. } => {}
             _ => {}
         }
@@ -608,6 +644,12 @@ impl CodeGenerator {
                 }
             }
             Stmt::While { body, .. } => {
+                self.collect_array_types(body, set);
+            }
+            Stmt::For { init, body, .. } => {
+                if let Some(init_stmt) = init {
+                    self.collect_array_types(init_stmt, set);
+                }
                 self.collect_array_types(body, set);
             }
             _ => {}
@@ -719,6 +761,52 @@ mod tests {
         let mut codegen = CodeGenerator::new();
         let wat = codegen.generate(ast);
         parse_str(&wat).expect("Generated WAT should be valid for while loop");
+    }
+
+    #[test]
+    fn codegen_execution_with_for_loop() {
+        let input = r#"
+            void main() {
+                for (int i = 0; i < 5; i = i + 1) {
+                    print(i);
+                }
+            }
+        "#;
+        let result = compile_and_run(input);
+        assert_eq!(result, "01234");
+    }
+
+    #[test]
+    fn codegen_execution_comprehensive_for_loops() {
+        let input = r#"
+            void main() {
+                // Simple counting loop
+                for (int i = 0; i < 3; i = i + 1) {
+                    print(i);
+                }
+                
+                // Countdown loop
+                for (int j = 5; j > 2; j = j - 1) {
+                    print(j);
+                }
+                
+                // Nested loops
+                for (int x = 0; x < 2; x = x + 1) {
+                    for (int y = 0; y < 2; y = y + 1) {
+                        print(x * 2 + y);
+                    }
+                }
+                
+                // Loop with no init (variable declared outside)
+                int k = 7;
+                for (; k < 9; k = k + 1) {
+                    print(k);
+                }
+            }
+        "#;
+        let result = compile_and_run(input);
+        // Expected: "012" + "543" + "0123" + "78"
+        assert_eq!(result, "012543012378");
     }
 
     #[test]
