@@ -665,12 +665,18 @@ mod tests {
                 out.push_str(&val.to_string());
             }
         }).unwrap();
+
         linker.func_wrap("host", "printString", {
             // This is a stub; actual string extraction from memory would be needed for real output.
             let output = output.clone();
-            move |_val: Rooted<ArrayRef>| {
+            move |mut caller: Caller<'_, ()>, val: Rooted<ArrayRef>| {
                 let mut out = output.lock().unwrap();
-                out.push_str("<string>");
+                let len = val.len(&caller).unwrap();
+                for i in 0..len {
+                    let val = val.get(&mut caller, i).unwrap();
+                    let byte = val.i32().unwrap();
+                    out.push(byte as u8 as char);
+                }
             }
         }).unwrap();
 
@@ -712,7 +718,7 @@ mod tests {
             }
         "#;
         let result = compile_and_run(input);
-        assert_eq!(result, "<string>");
+        assert_eq!(result, "hi");
     }
 
     #[test]
