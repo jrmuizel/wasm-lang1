@@ -380,8 +380,14 @@ impl CodeGenerator {
                         ">" => "i32.gt_s",
                         "<=" => "i32.le_s",
                         ">=" => "i32.ge_s",
-                        "&&" => "i32.and",
-                        "||" => "i32.or",
+                        "&&" => "i32.and",  // Note: This is actually bitwise, logical AND needs different handling
+                        "||" => "i32.or",   // Note: This is actually bitwise, logical OR needs different handling
+                        "&" => "i32.and",   // Bitwise AND
+                        "|" => "i32.or",    // Bitwise OR
+                        "^" => "i32.xor",   // Bitwise XOR
+                        "<<" => "i32.shl",  // Left shift
+                        ">>" => "i32.shr_s", // Signed right shift
+                        ">>>" => "i32.shr_u", // Unsigned right shift
                         _ => panic!("Unsupported operator: {}", op),
                     };
                     // Emit operands first, then operator
@@ -391,8 +397,9 @@ impl CodeGenerator {
             Expr::UnaryOp { op, operand } => {
                 let operand_expr = self.generate_expr(operand);
                 match op.as_str() {
-                    "-" => format!("i32.neg {}", operand_expr),
-                    "!" => format!("i32.eqz {}", operand_expr),
+                    "-" => format!("i32.sub (i32.const 0) ({})", operand_expr),
+                    "!" => format!("i32.eqz ({})", operand_expr),
+                    "~" => format!("i32.xor (i32.const -1) ({})", operand_expr), // Bitwise NOT: XOR with all 1s
                     _ => panic!("Unsupported unary operator: {}", op),
                 }
             }
@@ -1039,6 +1046,64 @@ mod tests {
         "#;
         let result = compile_and_run(input);
         assert_eq!(result, "50");
+    }
+
+    #[test]
+    fn codegen_execution_bitwise_operations() {
+        let input = r#"
+            void main() {
+                int a = 12; // 1100 in binary
+                int b = 10; // 1010 in binary
+                
+                // Bitwise AND: 1100 & 1010 = 1000 = 8
+                print(a & b);
+                
+                // Bitwise OR: 1100 | 1010 = 1110 = 14
+                print(a | b);
+                
+                // Bitwise XOR: 1100 ^ 1010 = 0110 = 6
+                print(a ^ b);
+                
+                // Bitwise NOT: ~1100 = ...11110011 = -13 (two's complement)
+                print(~a);
+                
+                // Left shift: 1100 << 2 = 110000 = 48
+                print(a << 2);
+                
+                // Right shift: 1100 >> 1 = 0110 = 6
+                print(a >> 1);
+                
+                // Unsigned right shift: same as signed for positive numbers
+                print(a >>> 1);
+            }
+        "#;
+        let result = compile_and_run(input);
+        // Expected: 8, 14, 6, -13, 48, 6, 6
+        assert_eq!(result, "8146-134866");
+    }
+
+    #[test]
+    fn codegen_execution_bitwise_compound_assignments() {
+        let input = r#"
+            void main() {
+                int x = 15; // 1111 in binary
+                
+                // x &= 7  =>  x = x & 7  =>  1111 & 0111 = 0111 = 7
+                x &= 7;
+                print(x);
+                
+                // x |= 8  =>  x = x | 8  =>  0111 | 1000 = 1111 = 15
+                x |= 8;
+                print(x);
+                
+                // x ^= 3  =>  x = x ^ 3  =>  1111 ^ 0011 = 1100 = 12
+                x ^= 3;
+                print(x);
+            }
+        "#;
+        let result = compile_and_run(input);
+        // Expected: 7, 15, 12
+        assert_eq!(result, "71512");
     }
 
 }
