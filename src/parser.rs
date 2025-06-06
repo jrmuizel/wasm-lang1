@@ -111,25 +111,53 @@ pub enum Stmt {
 // Lexer implementation
 pub struct Lexer<'a> {
     chars: Peekable<Chars<'a>>,
+    line: usize,
+    column: usize,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(input: &'a str) -> Self {
         Lexer {
             chars: input.chars().peekable(),
+            line: 1,
+            column: 1,
         }
+    }
+
+    /// Returns the current line and column (1-based)
+    pub fn position(&self) -> (usize, usize) {
+        (self.line, self.column)
+    }
+
+    /// Advances the iterator and updates line/column
+    fn next_char(&mut self) -> Option<char> {
+        let c = self.chars.next();
+        if let Some(ch) = c {
+            if ch == '\n' {
+                self.line += 1;
+                self.column = 1;
+            } else {
+                self.column += 1;
+            }
+        }
+        c
+    }
+
+    /// Peeks at the next character without consuming it
+    fn peek_char(&mut self) -> Option<&char> {
+        self.chars.peek()
     }
 
     pub fn next_token(&mut self) -> Token {
         self.skip_whitespace();
         
-        match self.chars.peek() {
+        match self.peek_char() {
             Some(&c) => match c {
                 '(' | ')' | '{' | '}' | ';' | ',' | '.' | '[' | ']' => {
                     if c == '.' {
                         return self.handle_dot();
                     }
-                    self.chars.next();
+                    self.next_char();
                     Token::Delimiter(c)
                 }
                 '+' | '-' | '*' | '/' | '!' | '&' | '|' | '<' | '>' | '=' => {
@@ -137,7 +165,7 @@ impl<'a> Lexer<'a> {
                     Token::Operator(op)
                 }
                 '"' => {
-                    self.chars.next(); // Skip opening quote
+                    self.next_char(); // Skip opening quote
                     let s = self.read_string();
                     Token::LiteralString(s)
                 }
@@ -159,7 +187,7 @@ impl<'a> Lexer<'a> {
                     Token::LiteralInt(self.read_number())
                 }
                 _ => {
-                    self.chars.next();
+                    self.next_char();
                     Token::Operator("?".to_string()) // Placeholder for unknown
                 }
             },
@@ -168,8 +196,8 @@ impl<'a> Lexer<'a> {
     }
    
     fn handle_dot(&mut self) -> Token {
-        self.chars.next(); // Consume '.'
-        if self.chars.peek() == Some(&'.') {
+        self.next_char(); // Consume '.'
+        if self.peek_char() == Some(&'.') {
             panic!("Double dot not supported");
         }
         Token::Dot
@@ -177,10 +205,10 @@ impl<'a> Lexer<'a> {
 
     fn read_identifier(&mut self) -> String {
         let mut ident = String::new();
-        while let Some(&c) = self.chars.peek() {
+        while let Some(&c) = self.peek_char() {
             if c.is_alphanumeric() || c == '_' {
                 ident.push(c);
-                self.chars.next();
+                self.next_char();
             } else {
                 break;
             }
@@ -190,10 +218,10 @@ impl<'a> Lexer<'a> {
 
     fn read_number(&mut self) -> i32 {
         let mut num_str = String::new();
-        while let Some(&c) = self.chars.peek() {
+        while let Some(&c) = self.peek_char() {
             if c.is_digit(10) {
                 num_str.push(c);
-                self.chars.next();
+                self.next_char();
             } else {
                 break;
             }
@@ -203,21 +231,21 @@ impl<'a> Lexer<'a> {
 
     fn read_string(&mut self) -> String {
         let mut s = String::new();
-        while let Some(&c) = self.chars.peek() {
+        while let Some(&c) = self.peek_char() {
             if c == '"' {
-                self.chars.next(); // Skip closing quote
+                self.next_char(); // Skip closing quote
                 break;
             }
             s.push(c);
-            self.chars.next();
+            self.next_char();
         }
         s
     }
 
     fn read_operator(&mut self) -> String {
         let mut op = String::new();
-        op.push(self.chars.next().unwrap());
-        if let Some(&next) = self.chars.peek() {
+        op.push(self.next_char().unwrap());
+        if let Some(&next) = self.peek_char() {
             if (op == "<" && next == '=') 
                 || (op == ">" && next == '=')
                 || (op == "!" && next == '=')
@@ -226,7 +254,7 @@ impl<'a> Lexer<'a> {
                 || (op == "=" && next == '=')
             {
                 op.push(next);
-                self.chars.next();
+                self.next_char();
             }
         }
         op
@@ -236,27 +264,27 @@ impl<'a> Lexer<'a> {
         loop {
             let mut skipped = false;
             // Skip whitespace
-            while let Some(&c) = self.chars.peek() {
+            while let Some(&c) = self.peek_char() {
                 if c.is_whitespace() {
-                    self.chars.next();
+                    self.next_char();
                     skipped = true;
                 } else {
                     break;
                 }
             }
             // Skip C++ style comments
-            if let Some(&'/') = self.chars.peek() {
+            if let Some(&'/') = self.peek_char() {
                 let mut clone = self.chars.clone();
-                clone.next();
-                if let Some(&'/') = clone.peek() {
+                let next = clone.next();
+                if let Some('/') = clone.peek().copied() {
                     // Found //, skip until end of line
-                    self.chars.next(); // skip first /
-                    self.chars.next(); // skip second /
-                    while let Some(&c) = self.chars.peek() {
+                    self.next_char(); // skip first /
+                    self.next_char(); // skip second /
+                    while let Some(&c) = self.peek_char() {
                         if c == '\n' {
                             break;
                         }
-                        self.chars.next();
+                        self.next_char();
                     }
                     skipped = true;
                 }
@@ -269,6 +297,21 @@ impl<'a> Lexer<'a> {
 }
 
 // Parser implementation
+#[derive(Debug, Clone)]
+pub struct ParseError {
+    pub message: String,
+    pub line: usize,
+    pub column: usize,
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Parse error at line {}, column {}: {}", self.line, self.column, self.message)
+    }
+}
+
+impl std::error::Error for ParseError {}
+
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
     lookahead: VecDeque<Token>,
@@ -340,16 +383,25 @@ impl<'a> Parser<'a> {
         None
     }
 
-    fn consume(&mut self, token: &Token, message: &str) -> Result<(), String> {
+    fn error<T>(&mut self, message: &str) -> Result<T, ParseError> {
+        let (line, column) = self.lexer.position();
+        Err(ParseError {
+            message: message.to_string(),
+            line,
+            column,
+        })
+    }
+
+    fn consume(&mut self, token: &Token, message: &str) -> Result<(), ParseError> {
         if self.check(token) {
             self.advance();
             Ok(())
         } else {
-            Err(message.to_string())
+            self.error(message)
         }
     }
 
-    pub fn parse(&mut self) -> Result<Vec<Stmt>, String> {
+    pub fn parse(&mut self) -> Result<Vec<Stmt>, ParseError> {
         let mut statements = Vec::new();
         while !self.is_at_end() {
             statements.push(self.statement()?);
@@ -357,7 +409,7 @@ impl<'a> Parser<'a> {
         Ok(statements)
     }
 
-    fn statement(&mut self) -> Result<Stmt, String> {
+    fn statement(&mut self) -> Result<Stmt, ParseError> {
         match self.peek() {
             Some(Token::Keyword(kw)) => match kw.as_str() {
                 "class" => self.class_decl(),
@@ -404,11 +456,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn class_decl(&mut self) -> Result<Stmt, String> {
+    fn class_decl(&mut self) -> Result<Stmt, ParseError> {
         self.consume(&Token::Keyword("class".to_string()), "Expected 'class'")?;
         let name = match self.advance() {
             Some(Token::Identifier(name)) => name,
-            _ => return Err("Expected class name".to_string()),
+            _ => return self.error("Expected class name"),
         };
         self.consume(&Token::Delimiter('{'), "Expected '{' before class body")?;
         
@@ -439,17 +491,17 @@ impl<'a> Parser<'a> {
         Ok(Stmt::ClassDecl { name, fields, methods })
     }
 
-    fn method_decl(&mut self) -> Result<Stmt, String> {
+    fn method_decl(&mut self) -> Result<Stmt, ParseError> {
         // Parse return type
         let return_type = match self.advance() {
             Some(Token::Keyword(kw)) => kw,
-            _ => return Err("Expected return type".to_string()),
+            _ => return self.error("Expected return type"),
         };
 
         // Parse method name
         let name = match self.advance() {
             Some(Token::Identifier(name)) => name,
-            _ => return Err("Expected method name".to_string()),
+            _ => return self.error("Expected method name"),
         };
 
         // Parse parameters
@@ -459,11 +511,11 @@ impl<'a> Parser<'a> {
             loop {
                 let param_type = match self.advance() {
                     Some(Token::Keyword(kw)) | Some(Token::Identifier(kw)) => kw,
-                    _ => return Err("Expected parameter type".to_string()),
+                    _ => return self.error("Expected parameter type"),
                 };
                 let param_name = match self.advance() {
                     Some(Token::Identifier(name)) => name,
-                    _ => return Err("Expected parameter name".to_string()),
+                    _ => return self.error("Expected parameter name"),
                 };
                 params.push((param_type, param_name));
                 
@@ -485,7 +537,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn return_statement(&mut self) -> Result<Stmt, String> {
+    fn return_statement(&mut self) -> Result<Stmt, ParseError> {
         self.consume(&Token::Keyword("return".to_string()), "Expected 'return'")?;
         let value = if !self.check(&Token::Delimiter(';')) {
             Some(self.expression()?)
@@ -497,11 +549,11 @@ impl<'a> Parser<'a> {
     }
 
 
-    fn variable_decl(&mut self) -> Result<Stmt, String> {
+    fn variable_decl(&mut self) -> Result<Stmt, ParseError> {
         let var_type = self.parse_type()?;
         let name = match self.advance() {
             Some(Token::Identifier(s)) => s,
-            _ => return Err("Expected identifier".to_string()),
+            _ => return self.error("Expected identifier"),
         };
         let init = if self.match_token(&Token::Operator("=".to_string())) {
             Some(self.expression()?)
@@ -512,7 +564,7 @@ impl<'a> Parser<'a> {
         Ok(Stmt::VariableDecl { var_type, name, init })
     }
 
-    fn if_statement(&mut self) -> Result<Stmt, String> {
+    fn if_statement(&mut self) -> Result<Stmt, ParseError> {
         self.consume(&Token::Keyword("if".to_string()), "Expected 'if'")?;
         self.consume(&Token::Delimiter('('), "Expected '(' after 'if'")?;
         let condition = self.expression()?;
@@ -532,7 +584,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn while_statement(&mut self) -> Result<Stmt, String> {
+    fn while_statement(&mut self) -> Result<Stmt, ParseError> {
         self.consume(&Token::Keyword("while".to_string()), "Expected 'while'")?;
         self.consume(&Token::Delimiter('('), "Expected '(' after 'while'")?;
         let condition = self.expression()?;
@@ -545,14 +597,14 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn print_statement(&mut self) -> Result<Stmt, String> {
+    fn print_statement(&mut self) -> Result<Stmt, ParseError> {
         self.consume(&Token::Keyword("print".to_string()), "Expected 'print'")?;
         let expr = self.expression()?;
         self.consume(&Token::Delimiter(';'), "Expected ';' after print")?;
         Ok(Stmt::Print(expr))
     }
 
-    fn block(&mut self) -> Result<Stmt, String> {
+    fn block(&mut self) -> Result<Stmt, ParseError> {
         self.consume(&Token::Delimiter('{'), "Expected '{'")?;
         let mut statements = Vec::new();
         while !self.check(&Token::Delimiter('}')) && !self.is_at_end() {
@@ -562,23 +614,23 @@ impl<'a> Parser<'a> {
         Ok(Stmt::Block(statements))
     }
 
-    fn expression_statement(&mut self) -> Result<Stmt, String> {
+    fn expression_statement(&mut self) -> Result<Stmt, ParseError> {
         let expr = self.expression()?;
         self.consume(&Token::Delimiter(';'), "Expected ';' after expression")?;
         Ok(Stmt::Expression(expr))
     }
 
-    fn expression(&mut self) -> Result<Expr, String> {
+    fn expression(&mut self) -> Result<Expr, ParseError> {
         self.assignment()
     }
 
-    fn postfix(&mut self) -> Result<Expr, String> {
+    fn postfix(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.primary()?;
         loop {
             if self.match_token(&Token::Dot) {
                 let method_or_field = match self.advance() {
                     Some(Token::Identifier(name)) => name,
-                    _ => return Err("Expected identifier after '.'".to_string()),
+                    _ => return self.error("Expected identifier after '.'"),
                 };
                 if self.match_token(&Token::Delimiter('(')) {
                     let args = self.parse_arguments()?;
@@ -608,12 +660,12 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
     
-    fn parse_arguments(&mut self) -> Result<Vec<Expr>, String> {
+    fn parse_arguments(&mut self) -> Result<Vec<Expr>, ParseError> {
         let args = self.parse_argument_list()?;
         Ok(args)
     }
 
-    fn logic_or(&mut self) -> Result<Expr, String> {
+    fn logic_or(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.logic_and()?;
         while let Some(op) = self.match_operator(&["||"]) {
             let right = self.logic_and()?;
@@ -626,7 +678,7 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    fn logic_and(&mut self) -> Result<Expr, String> {
+    fn logic_and(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.equality()?;
         while let Some(op) = self.match_operator(&["&&"]) {
             let right = self.equality()?;
@@ -639,7 +691,7 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    fn assignment(&mut self) -> Result<Expr, String> {
+    fn assignment(&mut self) -> Result<Expr, ParseError> {
         let expr = self.logic_or()?;
         if self.match_token(&Token::Operator("=".to_string())) {
             match expr {
@@ -667,14 +719,14 @@ impl<'a> Parser<'a> {
                         right: Box::new(value),
                     })
                 }
-                _ => Err("Invalid assignment target".to_string()),
+                _ => self.error("Invalid assignment target"),
             }
         } else {
             Ok(expr)
         }
     }
 
-    fn equality(&mut self) -> Result<Expr, String> {
+    fn equality(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.comparison()?;
         while let Some(op) = self.match_operator(&["==", "!="]) {
             let right = self.comparison()?;
@@ -687,7 +739,7 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    fn comparison(&mut self) -> Result<Expr, String> {
+    fn comparison(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.term()?;
         while let Some(op) = self.match_operator(&["<", "<=", ">", ">="]) {
             let right = self.term()?;
@@ -700,7 +752,7 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    fn term(&mut self) -> Result<Expr, String> {
+    fn term(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.factor()?;
         while let Some(op) = self.match_operator(&["+", "-"]) {
             let right = self.factor()?;
@@ -713,7 +765,7 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    fn factor(&mut self) -> Result<Expr, String> {
+    fn factor(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.unary()?;
         while let Some(op) = self.match_operator(&["*", "/"]) {
             let right = self.unary()?;
@@ -726,7 +778,7 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    fn unary(&mut self) -> Result<Expr, String> {
+    fn unary(&mut self) -> Result<Expr, ParseError> {
         if let Some(op) = self.match_operator(&["!", "-"]) {
             let operand = self.unary()?;
             return Ok(Expr::UnaryOp {
@@ -737,7 +789,7 @@ impl<'a> Parser<'a> {
         self.postfix()
     }
 
-    fn primary(&mut self) -> Result<Expr, String> {
+    fn primary(&mut self) -> Result<Expr, ParseError> {
         match self.advance() {
             Some(Token::LiteralInt(n)) => Ok(Expr::LiteralInt(n)),
             Some(Token::LiteralBool(b)) => Ok(Expr::LiteralBool(b)),
@@ -747,7 +799,7 @@ impl<'a> Parser<'a> {
                 // Parse base type after 'new'
                 let base_type = match self.advance() {
                     Some(Token::Keyword(s)) | Some(Token::Identifier(s)) => s,
-                    _ => return Err("Expected type after 'new'".to_string()),
+                    _ => return self.error("Expected type after 'new'"),
                 };
                 if self.match_token(&Token::Delimiter('[')) {
                     // Array creation: new int[expr]
@@ -760,7 +812,7 @@ impl<'a> Parser<'a> {
                     Ok(Expr::New { class_name: base_type, args })
                 } else {
                     // Forbid zero-arg constructor without parentheses
-                    Err("Expected '(' or '[' after type in 'new' expression".to_string())
+                    self.error("Expected '(' or '[' after type in 'new' expression")
                 }
             }
             Some(Token::Identifier(name)) => {
@@ -779,12 +831,12 @@ impl<'a> Parser<'a> {
                 self.consume(&Token::Delimiter(')'), "Expected ')'")?;
                 Ok(expr)
             }
-            _ => Err("Expected expression".to_string()),
+            _ => self.error("Expected expression"),
         }
     }
 
     
-    fn parse_argument_list(&mut self) -> Result<Vec<Expr>, String> {
+    fn parse_argument_list(&mut self) -> Result<Vec<Expr>, ParseError> {
         let mut args = Vec::new();
         if !self.check(&Token::Delimiter(')')) {
             loop {
@@ -797,11 +849,11 @@ impl<'a> Parser<'a> {
         Ok(args)
     }
 
-    fn field_decl(&mut self) -> Result<Stmt, String> {
+    fn field_decl(&mut self) -> Result<Stmt, ParseError> {
         let var_type = self.parse_type()?;
         let name = match self.advance() {
             Some(Token::Identifier(s)) => s,
-            _ => return Err("Expected identifier".to_string()),
+            _ => return self.error("Expected identifier"),
         };
         let init = if self.match_token(&Token::Operator("=".to_string())) {
             Some(self.expression()?)
@@ -812,11 +864,11 @@ impl<'a> Parser<'a> {
         Ok(Stmt::FieldDecl { var_type, name, init })
     }
 
-    fn function_decl(&mut self) -> Result<Stmt, String> {
+    fn function_decl(&mut self) -> Result<Stmt, ParseError> {
         let return_type = self.parse_type()?;
         let name = match self.advance() {
             Some(Token::Identifier(name)) => name,
-            _ => return Err("Expected function name".to_string()),
+            _ => return self.error("Expected function name"),
         };
         self.consume(&Token::Delimiter('('), "Expected '(' after function name")?;
         let mut params = Vec::new();
@@ -825,7 +877,7 @@ impl<'a> Parser<'a> {
                 let param_type = self.parse_type()?;
                 let param_name = match self.advance() {
                     Some(Token::Identifier(name)) => name,
-                    _ => return Err("Expected parameter name".to_string()),
+                    _ => return self.error("Expected parameter name"),
                 };
                 params.push((param_type, param_name));
                 if !self.match_token(&Token::Delimiter(',')) {
@@ -844,15 +896,15 @@ impl<'a> Parser<'a> {
     }
 
     // Add a helper to parse types, supporting array types like int[]
-    fn parse_type(&mut self) -> Result<String, String> {
+    fn parse_type(&mut self) -> Result<String, ParseError> {
         let base_type = match self.advance() {
             Some(Token::Keyword(s)) | Some(Token::Identifier(s)) => s,
-            _ => return Err("Expected type".to_string()),
+            _ => return self.error("Expected type"),
         };
         let mut type_str = base_type;
         while self.match_token(&Token::Delimiter('[')) {
             if !self.match_token(&Token::Delimiter(']')) {
-                return Err("Expected ']' after '[' in type".to_string());
+                return self.error("Expected ']' after '[' in type");
             }
             type_str.push_str("[]");
         }
@@ -880,7 +932,7 @@ fn main() {
     let mut parser = Parser::new(lexer);
     match parser.parse() {
         Ok(ast) => println!("{:#?}", ast),
-        Err(e) => eprintln!("Parse error: {}", e),
+        Err(e) => eprintln!("{}", e),
     }
 }
 
@@ -888,7 +940,7 @@ fn main() {
 mod tests {
     use super::*;
 
-    fn parse(input: &str) -> Result<Vec<Stmt>, String> {
+    fn parse(input: &str) -> Result<Vec<Stmt>, ParseError> {
         let lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer);
         let ast = parser.parse();
@@ -1063,7 +1115,7 @@ mod tests {
         let input = "int x";
         let result = parse(input);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Expected ';'"));
+        assert!(result.as_ref().unwrap_err().message.contains("Expected ';'"));
     }
 
     #[test]
@@ -1071,7 +1123,7 @@ mod tests {
         let input = "class { void method() {} }";
         let result = parse(input);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Expected class name"));
+        assert!(result.as_ref().unwrap_err().message.contains("Expected class name"));
     }
 
     #[test]
@@ -1079,7 +1131,7 @@ mod tests {
         let input = "42 = x;";
         let result = parse(input);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Invalid assignment target"));
+        assert!(result.as_ref().unwrap_err().message.contains("Invalid assignment target"));
     }
 
     #[test]
@@ -1087,7 +1139,7 @@ mod tests {
         let input = "if (x { }";
         let result = parse(input);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Expected ')'"));
+        assert!(result.as_ref().unwrap_err().message.contains("Expected ')'"));
     }
 
     #[test]
@@ -1095,7 +1147,7 @@ mod tests {
         let input = "class MyClass { void method() ";
         let result = parse(input);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Expected '{'"));
+        assert!(result.as_ref().unwrap_err().message.contains("Expected '{'"));
     }
 
     #[test]
@@ -1103,7 +1155,7 @@ mod tests {
         let input = "int 42;";
         let result = parse(input);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Expected identifier"));
+        assert!(result.as_ref().unwrap_err().message.contains("Expected identifier"));
     }
 
     #[test]
@@ -1111,7 +1163,7 @@ mod tests {
         let input = "obj.method(1, 2;";
         let result = parse(input);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Expected ')'"));
+        assert!(result.as_ref().unwrap_err().message.contains("Expected ')'"));
     }
 
     #[test]
@@ -1127,7 +1179,7 @@ mod tests {
         if let Err(e) = &result {
             eprintln!("Parse error: {}", e);
         }
-        assert!(result.unwrap_err().contains("Expected type after 'new'"));
+        assert!(result.as_ref().unwrap_err().message.contains("Expected type after 'new'"));
     }
 
     #[test]
