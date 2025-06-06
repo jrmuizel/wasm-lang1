@@ -712,6 +712,7 @@ mod tests {
             }
         "#;
         let result = compile_and_run(input);
+        assert_eq!(result, "<string>");
     }
 
     #[test]
