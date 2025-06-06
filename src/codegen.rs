@@ -60,6 +60,27 @@ impl CodeGenerator {
             self.emit("))\n");
         }
 
+        // Define array types for any used array types
+        let mut array_types = std::collections::HashSet::new();
+        for stmt in &stmts {
+            self.collect_array_types(stmt, &mut array_types);
+        }
+        for array_type in &array_types {
+            let elem_type = if array_type.starts_with("int") {
+                "i32"
+            } else if array_type.starts_with("boolean") {
+                "i32"
+            } else if array_type.starts_with("String") {
+                "(ref $String)"
+            } else if self.classes.contains_key(&array_type[..array_type.len()-2]) {
+                &format!("(ref ${})", &array_type[..array_type.len()-2])
+            } else {
+                "(ref $Object)"
+            };
+            let type_name = format!("${}Array", &array_type[..array_type.len()-2]);
+            self.emit_line(&format!("(type {} (array {}))", type_name, elem_type));
+        }
+
         // Generate functions and methods
         for stmt in &stmts {
             match stmt {
@@ -283,9 +304,9 @@ impl CodeGenerator {
                 for locals in self.local_vars_stack.iter().rev() {
                     if let Some(var_type) = locals.get(name) {
                         match var_type.as_str() {
-                            "int" | "boolean" => return format!("local.get ${}", name),
-                            "String" => return format!("local.get ${}", name),
+                            "int" | "boolean" | "String" => return format!("local.get ${}", name),
                             s if self.classes.contains_key(s) => return format!("local.get ${}", name),
+                            s if s.ends_with("[]") => return format!("local.get ${}", name),
                             _ => panic!("Unknown local variable type: {} for {}", var_type, name),
                         }
                     }
@@ -295,7 +316,7 @@ impl CodeGenerator {
             }
             Expr::BinaryOp { op, left, right } => {
                 if op == "=" {
-                    // Assignment expression: left must be a variable or field access
+                    // Assignment expression: left must be a variable, field, or array access
                     if let Expr::Variable(name) = &**left {
                         let value = self.generate_expr(right);
                         format!("local.set ${} ({})\n", name, value)
@@ -305,8 +326,15 @@ impl CodeGenerator {
                         // Use struct.set for field assignment
                         let class_name = self.get_class_name(object);
                         format!("struct.set ${} ${} ({}) ({})\n", class_name, field, obj, value)
+                    } else if let Expr::ArrayAccess { array, index } = &**left {
+                        let arr = self.generate_expr(array);
+                        let idx = self.generate_expr(index);
+                        let value = self.generate_expr(right);
+                        // Infer the array type from the variable type
+                        let arr_type = self.infer_array_type(array);
+                        format!("array.set {} ({}) ({}) ({})\n", arr_type, arr, idx, value)
                     } else {
-                        panic!("Assignment left side must be a variable or field");
+                        panic!("Assignment left side must be a variable, field, or array element");
                     }
                 } else {
                     let left_expr = self.generate_expr(left);
@@ -353,20 +381,34 @@ impl CodeGenerator {
                 format!("call ${}.{} ({}) {}", class_name, method, obj_code, call_args)
             }
             Expr::New { class_name, args } => {
-                let mut init_args = String::new();
-                if args.is_empty() {
-                    // Zero-initialize all fields if no args provided
-                    if let Some(fields) = self.classes.get(class_name) {
-                        for _ in fields {
-                            init_args.push_str("i32.const 0 ");
+                if class_name.ends_with("[]") && args.len() == 1 {
+                    // new int[10] style
+                    let elem_type = &class_name[..class_name.len() - 2];
+                    let type_name = format!("${}Array", elem_type);
+                    let len_expr = self.generate_expr(&args[0]);
+                    // Default initialize to 0 or null
+                    let default_val = match elem_type {
+                        "int" | "boolean" => "i32.const 0".to_string(),
+                        "String" => "ref.null $String".to_string(),
+                        s if self.classes.contains_key(s) => format!("ref.null ${}", s),
+                        _ => "ref.null $Object".to_string(),
+                    };
+                    format!("array.new {} {} {}", type_name, default_val, len_expr)
+                } else {
+                    let mut init_args = String::new();
+                    if args.is_empty() {
+                        if let Some(fields) = self.classes.get(class_name) {
+                            for _ in fields {
+                                init_args.push_str("i32.const 0 ");
+                            }
+                        }
+                    } else {
+                        for arg in args {
+                            init_args.push_str(&format!("{} ", self.generate_expr(arg)));
                         }
                     }
-                } else {
-                    for arg in args {
-                        init_args.push_str(&format!("{} ", self.generate_expr(arg)));
-                    }
+                    format!("struct.new ${} {}", class_name, init_args)
                 }
-                format!("struct.new ${} {}", class_name, init_args)
             }
             Expr::This => "local.get $this".to_string(),
             Expr::FunctionCall { name, args } => {
@@ -376,6 +418,12 @@ impl CodeGenerator {
                 }
                 // Emit arguments, then call
                 format!("call ${} {}", name, call_args)
+            },
+            Expr::ArrayAccess { array, index } => {
+                let arr = self.generate_expr(array);
+                let idx = self.generate_expr(index);
+                let arr_type = self.infer_array_type(array);
+                format!("array.get {} ({}) ({})", arr_type, arr, idx)
             },
             _ => "".to_string(),
         }
@@ -407,15 +455,29 @@ impl CodeGenerator {
     }
 
     fn type_to_wasm(&self, t: &str) -> String {
-        match t {
-            "int" => "i32".to_string(),
-            "boolean" => "i32".to_string(),
-            "String" => "(ref $String)".to_string(),
-            "void" => "".to_string(),
-            s if self.classes.contains_key(s) => {
-                format!("(ref ${})", s)
+        if t.ends_with("[]") {
+            let elem_type = &t[..t.len() - 2];
+            let wasm_elem_type = match elem_type {
+                "int" => "i32",
+                "boolean" => "i32",
+                "String" => "(ref $String)",
+                s if self.classes.contains_key(s) => &format!("(ref ${})", s),
+                _ => "(ref $Object)",
+            };
+            // Define a type name for the array type
+            let type_name = format!("${}Array", elem_type);
+            format!("(ref {})", type_name)
+        } else {
+            match t {
+                "int" => "i32".to_string(),
+                "boolean" => "i32".to_string(),
+                "String" => "(ref $String)".to_string(),
+                "void" => "".to_string(),
+                s if self.classes.contains_key(s) => {
+                    format!("(ref ${})", s)
+                }
+                _ => "(ref $Object)".to_string(),
             }
-            _ => "(ref $Object)".to_string(),
         }
     }
 
@@ -489,6 +551,68 @@ impl CodeGenerator {
             Expr::UnaryOp { .. } => Some("int"),
             Expr::FunctionCall { .. } => Some("int"),
             _ => None,
+        }
+    }
+
+    fn collect_array_types(&self, stmt: &Stmt, set: &mut std::collections::HashSet<String>) {
+        match stmt {
+            Stmt::VariableDecl { var_type, .. } | Stmt::FieldDecl { var_type, .. } => {
+                if var_type.ends_with("[]") {
+                    set.insert(var_type.clone());
+                }
+            }
+            Stmt::FunctionDecl { return_type, params, body, .. } => {
+                if return_type.ends_with("[]") {
+                    set.insert(return_type.clone());
+                }
+                for (param_type, _) in params {
+                    if param_type.ends_with("[]") {
+                        set.insert(param_type.clone());
+                    }
+                }
+                self.collect_array_types(body, set);
+            }
+            Stmt::ClassDecl { fields, methods, .. } => {
+                for f in fields {
+                    self.collect_array_types(f, set);
+                }
+                for m in methods {
+                    self.collect_array_types(m, set);
+                }
+            }
+            Stmt::Block(stmts) => {
+                for s in stmts {
+                    self.collect_array_types(s, set);
+                }
+            }
+            Stmt::If { then_block, else_block, .. } => {
+                self.collect_array_types(then_block, set);
+                if let Some(else_block) = else_block {
+                    self.collect_array_types(else_block, set);
+                }
+            }
+            Stmt::While { body, .. } => {
+                self.collect_array_types(body, set);
+            }
+            _ => {}
+        }
+    }
+
+    // Helper to infer array type for array.set
+    fn infer_array_type(&self, array_expr: &Expr) -> String {
+        match array_expr {
+            Expr::Variable(name) => {
+                for locals in self.local_vars_stack.iter().rev() {
+                    if let Some(var_type) = locals.get(name) {
+                        if var_type.ends_with("[]") {
+                            let elem_type = &var_type[..var_type.len() - 2];
+                            return format!("${}Array", elem_type);
+                        }
+                    }
+                }
+                "$Array".to_string()
+            }
+            _ => "$Array".to_string(),
         }
     }
 }
@@ -622,6 +746,7 @@ mod tests {
         let wat = codegen.generate(ast);
         parse_str(&wat).expect("Generated WAT should be valid for function call");
     }
+
 
     fn compile_and_run(input: &str) -> String {
         use wasmtime::{Engine, Module, Store, Linker, Config};
@@ -782,4 +907,19 @@ mod tests {
         let result = compile_and_run(input);
         assert_eq!(result, "153");
     }
+
+    #[test]
+    fn codegen_execution_array_type_and_access() {
+        let input = r#"
+            void main() {
+                int[] arr = new int[5];
+                arr[0] = 42;
+                int x = arr[0];
+                print(x);
+            }
+        "#;
+        let result = compile_and_run(input);
+        assert_eq!(result, "42");
+    }
+
 }
