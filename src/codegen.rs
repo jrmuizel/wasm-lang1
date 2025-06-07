@@ -33,6 +33,10 @@ impl CodeGenerator {
         self.emit_line("(import \"host\" \"printBool\" (func $printBool (param i32)))");
         self.emit_line("(import \"host\" \"printString\" (func $printString (param (ref array))))");
         self.emit_line("(import \"host\" \"printFloat\" (func $printFloat (param f32)))");
+        self.emit_line("(import \"host\" \"printlnInt\" (func $printlnInt (param i32)))");
+        self.emit_line("(import \"host\" \"printlnBool\" (func $printlnBool (param i32)))");
+        self.emit_line("(import \"host\" \"printlnString\" (func $printlnString (param (ref array))))");
+        self.emit_line("(import \"host\" \"printlnFloat\" (func $printlnFloat (param f32)))");
 
         // Define String type
         self.emit_line("(type $String (array i8))");
@@ -298,6 +302,18 @@ impl CodeGenerator {
                 };
                 // Emit the value first, then the call
                 self.emit(&format!("(call {} ({}))\n", print_func, value));
+            }
+            Stmt::Println(expr) => {
+                let value = self.generate_expr(expr);
+                // Determine the type of the expression for correct println function
+                let println_func = match self.infer_type(expr) {
+                    Some("int") => "$printlnInt",
+                    Some("boolean") => "$printlnBool",
+                    Some("String") => "$printlnString",
+                    _ => "$printlnInt", // Default to int for now
+                };
+                // Emit the value first, then the call
+                self.emit(&format!("(call {} ({}))\n", println_func, value));
             }
             Stmt::Return { value } => {
                 if let Some(expr) = value {
@@ -590,7 +606,7 @@ impl CodeGenerator {
                 }
                 self.collect_locals_recursive(body, param_names, locals);
             }
-            Stmt::Expression(_) | Stmt::Assignment { .. } | Stmt::Print(_) | Stmt::Return { .. } => {}
+            Stmt::Expression(_) | Stmt::Assignment { .. } | Stmt::Print(_) | Stmt::Println(_) | Stmt::Return { .. } => {}
             _ => {}
         }
     }
@@ -908,6 +924,45 @@ mod tests {
             }
         }).unwrap();
 
+        // Setup println functions for tests
+        linker.func_wrap("host", "printlnInt", {
+            let output = output.clone();
+            move |val: i32| {
+                let mut out = output.lock().unwrap();
+                out.push_str(&val.to_string());
+                out.push('\n');
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printlnBool", {
+            let output = output.clone();
+            move |val: i32| {
+                let mut out = output.lock().unwrap();
+                out.push_str(&val.to_string());
+                out.push('\n');
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printlnFloat", {
+            let output = output.clone();
+            move |val: f32| {
+                let mut out = output.lock().unwrap();
+                out.push_str(&val.to_string());
+                out.push('\n');
+            }
+        }).unwrap();
+        linker.func_wrap("host", "printlnString", {
+            let output = output.clone();
+            move |mut caller: Caller<'_, ()>, val: Rooted<ArrayRef>| {
+                let mut out = output.lock().unwrap();
+                let len = val.len(&caller).unwrap();
+                for i in 0..len {
+                    let val = val.get(&mut caller, i).unwrap();
+                    let byte = val.i32().unwrap();
+                    out.push(byte as u8 as char);
+                }
+                out.push('\n');
+            }
+        }).unwrap();
+
         let instance = linker.instantiate(&mut store, &module).unwrap();
         let main = instance.get_func(&mut store, "main").expect("main function");
         main.call(&mut store, &[], &mut []).expect("main should run");
@@ -1104,6 +1159,20 @@ mod tests {
         let result = compile_and_run(input);
         // Expected: 7, 15, 12
         assert_eq!(result, "71512");
+    }
+
+    #[test]
+    fn codegen_execution_println() {
+        let input = r#"
+            void main() {
+                println(42);
+                println("hello");
+                println(true);
+            }
+        "#;
+        let result = compile_and_run(input);
+        // Expected: "42\nhello\n1\n"  
+        assert_eq!(result, "42\nhello\n1\n");
     }
 
 }

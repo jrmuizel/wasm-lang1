@@ -97,6 +97,31 @@ fn execute_wasm(wasm_binary: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         }
     })?;
 
+    // Setup host functions for println (printing with newlines)
+    linker.func_wrap("host", "printlnInt", move |val: i32| {
+        println!("{}", val);
+    })?;
+
+    linker.func_wrap("host", "printlnBool", move |val: i32| {
+        println!("{}", if val != 0 { "true" } else { "false" });
+    })?;
+
+    linker.func_wrap("host", "printlnFloat", move |val: f32| {
+        println!("{}", val);
+    })?;
+
+    linker.func_wrap("host", "printlnString", move |mut caller: Caller<'_, ()>, val: Rooted<ArrayRef>| {
+        let len = val.len(&caller).unwrap_or(0);
+        for i in 0..len {
+            if let Ok(byte_val) = val.get(&mut caller, i) {
+                if let Some(byte) = byte_val.i32() {
+                    print!("{}", byte as u8 as char);
+                }
+            }
+        }
+        println!(); // Add newline after string
+    })?;
+
     // Instantiate and run
     let instance = linker.instantiate(&mut store, &module)?;
     

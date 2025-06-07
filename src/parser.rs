@@ -98,6 +98,7 @@ pub enum Stmt {
     Block(Vec<Stmt>),
     Expression(Expr),
     Print(Expr),
+    Println(Expr),
     ClassDecl {
         name: String,
         fields: Vec<Stmt>,  // For field declarations
@@ -178,7 +179,7 @@ impl<'a> Lexer<'a> {
                 _ if c.is_alphabetic() => {
                     let ident = self.read_identifier();
                     match ident.as_str() {
-                        "int" | "boolean" | "String" | "if" | "else" | "while" | "for" | "print" => {
+                        "int" | "boolean" | "String" | "if" | "else" | "while" | "for" | "print" | "println" => {
                             Token::Keyword(ident)
                         }
                         "true" => Token::LiteralBool(true),
@@ -460,6 +461,7 @@ impl<'a> Parser<'a> {
                 "while" => self.while_statement(),
                 "for" => self.for_statement(),
                 "print" => self.print_statement(),
+                "println" => self.println_statement(),
                 _ => self.expression_statement(),
             },
             Some(Token::Identifier(_)) => {
@@ -681,6 +683,13 @@ impl<'a> Parser<'a> {
         let expr = self.expression()?;
         self.consume(&Token::Delimiter(';'), "Expected ';' after print")?;
         Ok(Stmt::Print(expr))
+    }
+
+    fn println_statement(&mut self) -> Result<Stmt, ParseError> {
+        self.consume(&Token::Keyword("println".to_string()), "Expected 'println'")?;
+        let expr = self.expression()?;
+        self.consume(&Token::Delimiter(';'), "Expected ';' after println")?;
+        Ok(Stmt::Println(expr))
     }
 
     fn block(&mut self) -> Result<Stmt, ParseError> {
@@ -1245,6 +1254,12 @@ mod tests {
     #[test]
     fn test_print_statement() {
         let input = r#"print("Hello, world!");"#;
+        assert!(parse(input).is_ok());
+    }
+
+    #[test]
+    fn test_println_statement() {
+        let input = r#"println("Hello, world!");"#;
         assert!(parse(input).is_ok());
     }
 
