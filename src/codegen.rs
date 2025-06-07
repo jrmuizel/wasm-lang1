@@ -3,7 +3,6 @@
 use crate::parser::{Stmt, Expr, Token};
 use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
-use wasmtime::{Caller, Val, FuncType, ValType, ArrayRef, Rooted};
 
 pub struct CodeGenerator {
     classes: HashMap<String, Vec<(String, String)>>,
@@ -793,11 +792,10 @@ impl CodeGenerator {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{self, Arc, Mutex};
 
     use super::*;
-    use crate::parser::{Lexer, Parser};
-    use wasmtime::{ArrayRef, Config, Engine, ExternRef, Linker, Module, Rooted, Store};
+    use wasmtime::{ArrayRef, Caller, Rooted};
+    
     use wat::parse_str;
 
     fn parse(input: &str) -> Vec<Stmt> {
