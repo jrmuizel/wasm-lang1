@@ -152,7 +152,14 @@ impl CodeGenerator {
         }
         self.indent_level += 1;
         self.local_vars_stack.push(locals_map);
+        
         self.generate_stmt(body);
+        
+        // Check if function has proper return coverage for non-void functions
+        if return_type != "void" && !self.has_guaranteed_return(body) {
+            panic!("Compile error: Function '{}' with return type '{}' does not have a return statement on all code paths", name, return_type);
+        }
+        
         if return_type == "void" {
             self.emit_line("return");
         }
@@ -209,6 +216,8 @@ impl CodeGenerator {
         self.current_class = prev_class;
     }
 
+
+
     fn generate_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Block(stmts) => {
@@ -237,19 +246,81 @@ impl CodeGenerator {
                 self.emit(&format!("(global.set ${} ({}))\n", name, value));
             }
             Stmt::If { condition, then_block, else_block } => {
-                let cond = self.generate_expr(condition);
-                self.emit(&format!("(if ({})\n", cond));
-                self.indent_level += 1;
-                self.emit_line("(then");
-                self.generate_stmt(then_block);
-                self.emit_line(")");
-                if let Some(else_block) = else_block {
-                    self.emit_line("(else");
-                    self.generate_stmt(else_block);
+                // Check if both branches are simple return statements (possibly wrapped in blocks)
+                let then_return_expr = match then_block.as_ref() {
+                    Stmt::Return { value: Some(expr) } => Some(expr),
+                    Stmt::Block(stmts) if stmts.len() == 1 => {
+                        if let Stmt::Return { value: Some(expr) } = &stmts[0] {
+                            Some(expr)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                
+                let else_return_expr = match else_block.as_ref() {
+                    Some(else_stmt) => match else_stmt.as_ref() {
+                        Stmt::Return { value: Some(expr) } => Some(expr),
+                        Stmt::Block(stmts) if stmts.len() == 1 => {
+                            if let Stmt::Return { value: Some(expr) } = &stmts[0] {
+                                Some(expr)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    },
+                    None => None,
+                };
+                
+                let is_simple_return_if = then_return_expr.is_some() && else_return_expr.is_some();
+                
+
+                
+                if is_simple_return_if {
+                    // Generate if expression that produces a value
+                    let cond = self.generate_expr(condition);
+                    self.emit(&format!("(if (result i32) ({})\n", cond));
+                    self.indent_level += 1;
+                    self.emit_line("(then");
+                    self.indent_level += 1;
+                    if let Some(expr) = then_return_expr {
+                        let ret_value = self.generate_expr(expr);
+                        self.emit(&format!("({})\n", ret_value));
+                    }
+                    self.indent_level -= 1;
+                    self.emit_line(")");
+                    if let Some(expr) = else_return_expr {
+                        self.emit_line("(else");
+                        self.indent_level += 1;
+                        let ret_value = self.generate_expr(expr);
+                        self.emit(&format!("({})\n", ret_value));
+                        self.indent_level -= 1;
+                        self.emit_line(")");
+                    }
+                    self.indent_level -= 1;
+                    self.emit_line(")");
+                } else {
+                    // Generate regular if statement  
+                    let cond = self.generate_expr(condition);
+                    self.emit(&format!("(if ({})\n", cond));
+                    self.indent_level += 1;
+                    self.emit_line("(then");
+                    self.indent_level += 1;
+                    self.generate_stmt(then_block);
+                    self.indent_level -= 1;
+                    self.emit_line(")");
+                    if let Some(else_block) = else_block {
+                        self.emit_line("(else");
+                        self.indent_level += 1;
+                        self.generate_stmt(else_block);
+                        self.indent_level -= 1;
+                        self.emit_line(")");
+                    }
+                    self.indent_level -= 1;
                     self.emit_line(")");
                 }
-                self.indent_level -= 1;
-                self.emit_line(")");
             }
             Stmt::While { condition, body } => {
                 self.emit_line("(block");
@@ -694,6 +765,28 @@ impl CodeGenerator {
                 "$Array".to_string()
             }
             _ => "$Array".to_string(),
+        }
+    }
+
+    // Check if a statement guarantees a return on all execution paths
+    fn has_guaranteed_return(&self, stmt: &Stmt) -> bool {
+        match stmt {
+            Stmt::Return { .. } => true,
+            Stmt::If { then_block, else_block, .. } => {
+                // Both branches must guarantee a return
+                if let Some(else_stmt) = else_block {
+                    self.has_guaranteed_return(then_block) && self.has_guaranteed_return(else_stmt)
+                } else {
+                    false // No else branch means no guaranteed return
+                }
+            }
+            Stmt::Block(stmts) => {
+                // Check if any statement in the block guarantees a return
+                stmts.iter().any(|s| self.has_guaranteed_return(s))
+            }
+            Stmt::While { .. } => false, // While loops don't guarantee execution
+            Stmt::For { .. } => false,   // For loops don't guarantee execution
+            _ => false,
         }
     }
 }
@@ -1173,6 +1266,146 @@ mod tests {
         let result = compile_and_run(input);
         // Expected: "42\nhello\n1\n"  
         assert_eq!(result, "42\nhello\n1\n");
+    }
+
+    #[test]
+    fn codegen_execution_simple_recursive() {
+        let input = r#"
+            int simple(int n) {
+                if (n <= 0) {
+                    return 1;
+                } else {
+                    return n + simple(n - 1);
+                }
+            }
+            
+            void main() {
+                print(simple(3));
+            }
+        "#;
+        let result = compile_and_run(input);
+        // Expected: 1 + 2 + 3 + 1 = 7
+        assert_eq!(result, "7");
+    }
+
+    #[test]
+    fn codegen_execution_single_branch_return() {
+        let input = r#"
+            int test(int x) {
+                if (x > 0) {
+                    return x;
+                }
+                return 0;
+            }
+            
+            void main() {
+                print(test(5));
+                print(test(-3));
+            }
+        "#;
+        let result = compile_and_run(input);
+        // Expected: test(5)=5, test(-3)=0
+        assert_eq!(result, "50");
+    }
+
+    #[test]
+    #[should_panic(expected = "Compile error: Function 'test' with return type 'int' does not have a return statement on all code paths")]
+    fn codegen_execution_single_branch_return_no_fallback() {
+        let input = r#"
+            int test(int x) {
+                if (x > 0) {
+                    return x;
+                }
+                // No else branch, no return after - this should be a compile error
+            }
+            
+            void main() {
+                print(test(5));
+            }
+        "#;
+        let _result = compile_and_run(input);
+    }
+
+    #[test]
+    #[should_panic(expected = "Compile error: Function 'test' with return type 'int' does not have a return statement on all code paths")]
+    fn codegen_execution_else_only_return() {
+        let input = r#"
+            int test(int x) {
+                if (x > 0) {
+                    // No return in then branch
+                } else {
+                    return 0;
+                }
+                // No return after - this should be a compile error
+            }
+            
+            void main() {
+                print(test(-1));
+            }
+        "#;
+        let _result = compile_and_run(input);
+    }
+
+    #[test]
+    fn codegen_execution_proper_return_coverage() {
+        let input = r#"
+            int test(int x) {
+                if (x > 0) {
+                    return x * 2;
+                } else {
+                    return 0;
+                }
+                // Both branches return - this is correct
+            }
+            
+            void main() {
+                print(test(5));
+                print(test(-3));
+            }
+        "#;
+        let result = compile_and_run(input);
+        assert_eq!(result, "100");
+    }
+
+    #[test]
+    fn codegen_execution_recursive_functions() {
+        let input = r#"
+            int factorial(int n) {
+                if (n <= 1) {
+                    return 1;
+                } else {
+                    return n * factorial(n - 1);
+                }
+            }
+            
+            int fibonacci(int n) {
+                if (n <= 1) {
+                    return n;
+                } else {
+                    return fibonacci(n - 1) + fibonacci(n - 2);
+                }
+            }
+            
+            void main() {
+                // Test factorial: 5! = 120
+                print(factorial(5));
+                
+                // Test fibonacci: fib(6) = 8
+                print(fibonacci(6));
+                
+                // Test recursive function with larger values
+                print(factorial(6)); // 6! = 720
+                
+                // Test edge cases
+                print(factorial(0)); // 0! = 1
+                print(factorial(1)); // 1! = 1
+                print(fibonacci(0)); // fib(0) = 0
+                print(fibonacci(1)); // fib(1) = 1
+            }
+        "#;
+        let result = compile_and_run(input);
+        // Expected: factorial(5)=120, fibonacci(6)=8, factorial(6)=720, factorial(0)=1, factorial(1)=1, fibonacci(0)=0, fibonacci(1)=1
+        assert_eq!(result, "12087201101");
     }
 
 }
