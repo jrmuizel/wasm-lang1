@@ -415,6 +415,7 @@ impl CodeGenerator {
                     format!("array.new_fixed $String {} {}", s.len(), values)
                 }
             }
+            Expr::LiteralNull => "ref.null $String".to_string(),
             Expr::Variable(name) => {
                 // Try to find the type of the variable in local_vars_stack
                 for locals in self.local_vars_stack.iter().rev() {
@@ -455,13 +456,38 @@ impl CodeGenerator {
                 } else {
                     let left_expr = self.generate_expr(left);
                     let right_expr = self.generate_expr(right);
+                    
+                    // For equality/inequality operations, we need to determine if we're comparing references or integers
                     let op_code = match op.as_str() {
                         "+" => "i32.add",
                         "-" => "i32.sub",
                         "*" => "i32.mul",
                         "/" => "i32.div_s",
-                        "==" => "i32.eq",
-                        "!=" => "i32.ne",
+                        "==" => {
+                            // Check if we're comparing references (String, objects, or null)
+                            let left_type = self.infer_type(left);
+                            let right_type = self.infer_type(right);
+                            if matches!(left_type, Some("String") | Some("Object")) || 
+                               matches!(right_type, Some("String") | Some("Object")) ||
+                               matches!(**left, Expr::LiteralNull) || matches!(**right, Expr::LiteralNull) {
+                                "ref.eq"
+                            } else {
+                                "i32.eq"
+                            }
+                        },
+                        "!=" => {
+                            // Check if we're comparing references (String, objects, or null)
+                            let left_type = self.infer_type(left);
+                            let right_type = self.infer_type(right);
+                            if matches!(left_type, Some("String") | Some("Object")) || 
+                               matches!(right_type, Some("String") | Some("Object")) ||
+                               matches!(**left, Expr::LiteralNull) || matches!(**right, Expr::LiteralNull) {
+                                // For ref.ne, we need to negate ref.eq
+                                return format!("i32.eqz (ref.eq ({}) ({}))", left_expr, right_expr);
+                            } else {
+                                "i32.ne"
+                            }
+                        },
                         "<" => "i32.lt_s",
                         ">" => "i32.gt_s",
                         "<=" => "i32.le_s",
@@ -687,9 +713,15 @@ impl CodeGenerator {
             Expr::LiteralInt(_) => Some("int"),
             Expr::LiteralBool(_) => Some("boolean"),
             Expr::LiteralString(_) => Some("String"),
+            Expr::LiteralNull => Some("Object"), // null can be assigned to any reference type
             Expr::Variable(name) => {
-                // Try to find the type from local_vars_stack or classes
-                // For now, default to int
+                // Try to find the type from local_vars_stack
+                for locals in self.local_vars_stack.iter().rev() {
+                    if let Some(var_type) = locals.get(name) {
+                        return Some(var_type);
+                    }
+                }
+                // Default to int if not found
                 Some("int")
             }
             Expr::BinaryOp { .. } => Some("int"),
@@ -1404,6 +1436,19 @@ mod tests {
         let result = compile_and_run(input);
         // Expected: factorial(5)=120, fibonacci(6)=8, factorial(6)=720, factorial(0)=1, factorial(1)=1, fibonacci(0)=0, fibonacci(1)=1
         assert_eq!(result, "12087201101");
+    }
+
+    #[test]
+    fn codegen_execution_null_literal() {
+        let input = r#"
+            void main() {
+                String s = null;
+                boolean isNull = (s == null);
+                print(isNull);
+            }
+        "#;
+        let result = compile_and_run(input);
+        assert_eq!(result, "1"); // true, since s is null
     }
 
 }

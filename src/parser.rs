@@ -10,6 +10,7 @@ pub enum Token {
     LiteralInt(i32),       // e.g., 42
     LiteralBool(bool),      // e.g., true/false
     LiteralString(String), // e.g., "hello"
+    LiteralNull,          // null literal
     Operator(String),      // e.g., "+", "="
     Delimiter(char),       // e.g., '(', ';'
     Dot,                  // '.' for field/method access
@@ -34,6 +35,7 @@ pub enum Expr {
     LiteralInt(i32),
     LiteralBool(bool),
     LiteralString(String),
+    LiteralNull,
     MethodCall {
         object: Box<Expr>,
         method: String,
@@ -184,6 +186,7 @@ impl<'a> Lexer<'a> {
                         }
                         "true" => Token::LiteralBool(true),
                         "false" => Token::LiteralBool(false),
+                        "null" => Token::LiteralNull,
                         "this" => Token::This,
                         "new" => Token::New,
                         "class" | "void" | "return" => Token::Keyword(ident),
@@ -491,7 +494,7 @@ impl<'a> Parser<'a> {
             },
             Some(Token::Delimiter('{')) => self.block(),
             Some(Token::This) | Some(Token::LiteralInt(_)) | 
-            Some(Token::LiteralBool(_)) | Some(Token::LiteralString(_)) |
+            Some(Token::LiteralBool(_)) | Some(Token::LiteralString(_)) | Some(Token::LiteralNull) |
             Some(Token::New) | Some(Token::Delimiter('(')) => self.expression_statement(),
             _ => self.expression_statement(), // Changed from Err to allow any expression
         }
@@ -1026,6 +1029,7 @@ impl<'a> Parser<'a> {
             Some(Token::LiteralInt(n)) => Ok(Expr::LiteralInt(n)),
             Some(Token::LiteralBool(b)) => Ok(Expr::LiteralBool(b)),
             Some(Token::LiteralString(s)) => Ok(Expr::LiteralString(s)),
+            Some(Token::LiteralNull) => Ok(Expr::LiteralNull),
             Some(Token::This) => Ok(Expr::This),
             Some(Token::New) => {
                 // Parse base type after 'new'
@@ -1523,7 +1527,17 @@ mod tests {
         // (not required for this basic test)
     }
 
-
+    #[test]
+    fn test_null_literal() {
+        let input = r#"
+            void main() {
+                String s = null;
+                print(s);
+            }
+        "#;
+        let ast = parse(input);
+        assert!(ast.is_ok());
+    }
 
     #[test]
     fn test_error_position_reporting() {
