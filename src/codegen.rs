@@ -1650,4 +1650,42 @@ mod tests {
         let result = compile_and_run(input);
         assert_eq!(result, "1001"); // 1, 0, 0, 1
     }
+
+        #[test]
+    fn codegen_execution_null_method_parameters() {
+        let input = r#"
+            class Container {
+                String data;
+                
+                void setData(String s) {
+                    this.data = s;
+                }
+                
+                boolean isDataNull() {
+                    return this.data == null;
+                }
+            }
+            
+            void main() {
+                Container c = new Container();
+                
+                // Initially data should be null (default)
+                print(c.isDataNull()); // Should print 1 (true)
+                
+                // Pass null explicitly
+                c.setData(null);
+                print(c.isDataNull()); // Should print 1 (true)
+                
+                // Set to a string
+                c.setData("hello");
+                print(c.isDataNull()); // Should print 0 (false)
+                
+                // Set back to null
+                c.setData(null);
+                print(c.isDataNull()); // Should print 1 (true)
+            }
+        "#;
+        let result = compile_and_run(input);
+        assert_eq!(result, "1101"); // 1, 1, 0, 1
+    }
 }
