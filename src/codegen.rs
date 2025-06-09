@@ -1451,4 +1451,34 @@ mod tests {
         assert_eq!(result, "1"); // true, since s is null
     }
 
+    #[test]
+    fn codegen_execution_function_returns_class_object() {
+        let input = r#"
+            class Point {
+                int x;
+                int y;
+            }
+            
+            Point createPoint(int x, int y) {
+                Point p = new Point();
+                p.x = x;
+                p.y = y;
+                return p;
+            }
+            
+            void main() {
+                Point p = createPoint(10, 20);
+                print(p.x);
+                print(p.y);
+                
+                // Test with different values
+                Point p2 = createPoint(5, 15);
+                print(p2.x + p2.y); // Should print 20
+            }
+        "#;
+        let result = compile_and_run(input);
+        assert_eq!(result, "102020"); // 10, 20, 20 (5+15)
+    }
+
+
 }
