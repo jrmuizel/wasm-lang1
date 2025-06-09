@@ -215,8 +215,6 @@ impl CodeGenerator {
         self.current_class = prev_class;
     }
 
-
-
     fn generate_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Block(stmts) => {
@@ -274,8 +272,6 @@ impl CodeGenerator {
                 };
                 
                 let is_simple_return_if = then_return_expr.is_some() && else_return_expr.is_some();
-                
-
                 
                 if is_simple_return_if {
                     // Generate if expression that produces a value
@@ -439,7 +435,17 @@ impl CodeGenerator {
                         format!("local.set ${} ({})\n", name, value)
                     } else if let Expr::FieldAccess { object, field } = &**left {
                         let obj = self.generate_expr(object);
-                        let value = self.generate_expr(right);
+                        // For field assignments with null, use the correct type
+                        let value = if matches!(**right, Expr::LiteralNull) {
+                            let class_name = self.get_class_name(object);
+                            if let Some(field_type) = self.get_field_type(&class_name, field) {
+                                self.generate_null_ref(&field_type)
+                            } else {
+                                self.generate_expr(right)
+                            }
+                        } else {
+                            self.generate_expr(right)
+                        };
                         // Use struct.set for field assignment
                         let class_name = self.get_class_name(object);
                         format!("struct.set ${} ${} ({}) ({})\n", class_name, field, obj, value)
@@ -470,7 +476,41 @@ impl CodeGenerator {
                             if matches!(left_type, Some("String") | Some("Object")) || 
                                matches!(right_type, Some("String") | Some("Object")) ||
                                matches!(**left, Expr::LiteralNull) || matches!(**right, Expr::LiteralNull) {
-                                "ref.eq"
+                                
+                                // Handle null comparisons with correct types
+                                let left_expr = if matches!(**left, Expr::LiteralNull) {
+                                    // If right side is a field access, use its type for the null
+                                    if let Expr::FieldAccess { object, field } = &**right {
+                                        let class_name = self.get_class_name(object);
+                                        if let Some(field_type) = self.get_field_type(&class_name, field) {
+                                            self.generate_null_ref(&field_type)
+                                        } else {
+                                            self.generate_expr(left)
+                                        }
+                                    } else {
+                                        self.generate_expr(left)
+                                    }
+                                } else {
+                                    self.generate_expr(left)
+                                };
+                                
+                                let right_expr = if matches!(**right, Expr::LiteralNull) {
+                                    // If left side is a field access, use its type for the null
+                                    if let Expr::FieldAccess { object, field } = &**left {
+                                        let class_name = self.get_class_name(object);
+                                        if let Some(field_type) = self.get_field_type(&class_name, field) {
+                                            self.generate_null_ref(&field_type)
+                                        } else {
+                                            self.generate_expr(right)
+                                        }
+                                    } else {
+                                        self.generate_expr(right)
+                                    }
+                                } else {
+                                    self.generate_expr(right)
+                                };
+                                
+                                return format!("ref.eq ({}) ({})", left_expr, right_expr);
                             } else {
                                 "i32.eq"
                             }
@@ -482,6 +522,40 @@ impl CodeGenerator {
                             if matches!(left_type, Some("String") | Some("Object")) || 
                                matches!(right_type, Some("String") | Some("Object")) ||
                                matches!(**left, Expr::LiteralNull) || matches!(**right, Expr::LiteralNull) {
+                                
+                                // Handle null comparisons with correct types
+                                let left_expr = if matches!(**left, Expr::LiteralNull) {
+                                    // If right side is a field access, use its type for the null
+                                    if let Expr::FieldAccess { object, field } = &**right {
+                                        let class_name = self.get_class_name(object);
+                                        if let Some(field_type) = self.get_field_type(&class_name, field) {
+                                            self.generate_null_ref(&field_type)
+                                        } else {
+                                            self.generate_expr(left)
+                                        }
+                                    } else {
+                                        self.generate_expr(left)
+                                    }
+                                } else {
+                                    self.generate_expr(left)
+                                };
+                                
+                                let right_expr = if matches!(**right, Expr::LiteralNull) {
+                                    // If left side is a field access, use its type for the null
+                                    if let Expr::FieldAccess { object, field } = &**left {
+                                        let class_name = self.get_class_name(object);
+                                        if let Some(field_type) = self.get_field_type(&class_name, field) {
+                                            self.generate_null_ref(&field_type)
+                                        } else {
+                                            self.generate_expr(right)
+                                        }
+                                    } else {
+                                        self.generate_expr(right)
+                                    }
+                                } else {
+                                    self.generate_expr(right)
+                                };
+                                
                                 // For ref.ne, we need to negate ref.eq
                                 return format!("i32.eqz (ref.eq ({}) ({}))", left_expr, right_expr);
                             } else {
@@ -547,8 +621,14 @@ impl CodeGenerator {
                     let mut init_args = String::new();
                     if args.is_empty() {
                         if let Some(fields) = self.classes.get(class_name) {
-                            for _ in fields {
-                                init_args.push_str("i32.const 0 ");
+                            for (_, field_type) in fields {
+                                let default_val = match field_type.as_str() {
+                                    "int" | "boolean" => "i32.const 0".to_string(),
+                                    "String" => "ref.null $String".to_string(),
+                                    s if self.classes.contains_key(s) => format!("ref.null ${}", s),
+                                    _ => "ref.null $Object".to_string(),
+                                };
+                                init_args.push_str(&format!("{} ", default_val));
                             }
                         }
                     } else {
@@ -818,6 +898,26 @@ impl CodeGenerator {
             Stmt::While { .. } => false, // While loops don't guarantee execution
             Stmt::For { .. } => false,   // For loops don't guarantee execution
             _ => false,
+        }
+    }
+
+    fn get_field_type(&self, class_name: &str, field_name: &str) -> Option<String> {
+        if let Some(fields) = self.classes.get(class_name) {
+            for (name, field_type) in fields {
+                if name == field_name {
+                    return Some(field_type.clone());
+                }
+            }
+        }
+        None
+    }
+
+    fn generate_null_ref(&self, expected_type: &str) -> String {
+        match expected_type {
+            "int" | "boolean" => "i32.const 0".to_string(),
+            "String" => "ref.null $String".to_string(),
+            s if self.classes.contains_key(s) => format!("ref.null ${}", s),
+            _ => "ref.null $Object".to_string(),
         }
     }
 }
