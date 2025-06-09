@@ -537,10 +537,7 @@ impl<'a> Parser<'a> {
 
     fn method_decl(&mut self) -> Result<Stmt, ParseError> {
         // Parse return type
-        let return_type = match self.advance() {
-            Some(Token::Keyword(kw)) => kw,
-            _ => return self.error("Expected return type"),
-        };
+        let return_type = self.parse_type()?;
 
         // Parse method name
         let name = match self.advance() {

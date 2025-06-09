@@ -989,6 +989,45 @@ mod tests {
         parse_str(&wat).expect("Generated WAT should be valid for function call");
     }
 
+    #[test]
+    fn codegen_execution_method_returns_class_object() {
+        let input = r#"
+            class Point {
+                int x;
+                int y;
+            }
+            
+            class PointFactory {
+                Point createPoint(int x, int y) {
+                    Point p = new Point();
+                    p.x = x;
+                    p.y = y;
+                    return p;
+                }
+                
+                Point createOrigin() {
+                    return this.createPoint(0, 0);
+                }
+            }
+            
+            void main() {
+                PointFactory factory = new PointFactory();
+                Point p1 = factory.createPoint(10, 20);
+                print(p1.x);
+                print(p1.y);
+                
+                Point origin = factory.createOrigin();
+                print(origin.x);
+                print(origin.y);
+                
+                // Test chaining method calls
+                Point p2 = factory.createPoint(5, 7);
+                print(p2.x + p2.y); // Should print 12
+            }
+        "#;
+        let result = compile_and_run(input);
+        assert_eq!(result, "10200012"); // 10, 20, 0, 0, 12 (5+7)
+    }
 
     fn compile_and_run(input: &str) -> String {
         use wasmtime::{Engine, Module, Store, Linker, Config};
@@ -1479,6 +1518,4 @@ mod tests {
         let result = compile_and_run(input);
         assert_eq!(result, "102020"); // 10, 20, 20 (5+15)
     }
-
-
 }
