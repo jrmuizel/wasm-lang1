@@ -10,6 +10,7 @@ pub struct CodeGenerator {
     indent_level: usize,
     local_vars_stack: Vec<HashMap<String, String>>, // Stack of local variable names to types
     current_class: Option<String>,
+    current_return_type: Option<String>, // Track current function's return type
 }
 
 impl CodeGenerator {
@@ -20,6 +21,7 @@ impl CodeGenerator {
             indent_level: 0,
             local_vars_stack: Vec::new(),
             current_class: None,
+            current_return_type: None,
         }
     }
 
@@ -127,6 +129,9 @@ impl CodeGenerator {
         body: &Stmt,
         is_main: bool,
     ) {
+        let prev_return_type = self.current_return_type.clone();
+        self.current_return_type = Some(return_type.to_string());
+        
         self.emit(&format!("(func ${}", name));
         let mut locals_map = std::collections::HashMap::new();
         for (param_type, param_name) in params.iter() {
@@ -165,6 +170,7 @@ impl CodeGenerator {
         self.local_vars_stack.pop();
         self.indent_level -= 1;
         self.emit_line(")");
+        self.current_return_type = prev_return_type;
     }
 
     fn generate_method(
@@ -176,7 +182,9 @@ impl CodeGenerator {
         body: &Stmt,
     ) {
         let prev_class = self.current_class.clone();
+        let prev_return_type = self.current_return_type.clone();
         self.current_class = Some(class_name.to_string());
+        self.current_return_type = Some(return_type.to_string());
         self.emit(&format!("(func ${}.{}", class_name, method_name));
         self.emit(&format!(" (param $this (ref null ${}))", class_name));
         let mut locals_map = std::collections::HashMap::new();
@@ -213,6 +221,7 @@ impl CodeGenerator {
         // Export the method so it can be called
         self.emit_line(&format!("(export \"{}.{}\" (func ${}.{}))", class_name, method_name, class_name, method_name));
         self.current_class = prev_class;
+        self.current_return_type = prev_return_type;
     }
 
     fn generate_stmt(&mut self, stmt: &Stmt) {
@@ -276,12 +285,25 @@ impl CodeGenerator {
                 if is_simple_return_if {
                     // Generate if expression that produces a value
                     let cond = self.generate_expr(condition);
-                    self.emit(&format!("(if (result i32) ({})\n", cond));
+                    let result_type = if let Some(return_type) = &self.current_return_type {
+                        self.type_to_wasm(return_type)
+                    } else {
+                        "i32".to_string()
+                    };
+                    self.emit(&format!("(if (result {}) ({})\n", result_type, cond));
                     self.indent_level += 1;
                     self.emit_line("(then");
                     self.indent_level += 1;
                     if let Some(expr) = then_return_expr {
-                        let ret_value = self.generate_expr(expr);
+                        let ret_value = if matches!(expr, Expr::LiteralNull) {
+                            if let Some(return_type) = &self.current_return_type {
+                                self.generate_null_ref(return_type)
+                            } else {
+                                self.generate_expr(expr)
+                            }
+                        } else {
+                            self.generate_expr(expr)
+                        };
                         self.emit(&format!("({})\n", ret_value));
                     }
                     self.indent_level -= 1;
@@ -289,7 +311,15 @@ impl CodeGenerator {
                     if let Some(expr) = else_return_expr {
                         self.emit_line("(else");
                         self.indent_level += 1;
-                        let ret_value = self.generate_expr(expr);
+                        let ret_value = if matches!(expr, Expr::LiteralNull) {
+                            if let Some(return_type) = &self.current_return_type {
+                                self.generate_null_ref(return_type)
+                            } else {
+                                self.generate_expr(expr)
+                            }
+                        } else {
+                            self.generate_expr(expr)
+                        };
                         self.emit(&format!("({})\n", ret_value));
                         self.indent_level -= 1;
                         self.emit_line(")");
@@ -383,8 +413,17 @@ impl CodeGenerator {
             }
             Stmt::Return { value } => {
                 if let Some(expr) = value {
-                    let ret_value = self.generate_expr(expr);
-                    self.emit(&format!("(return ({}))\n", ret_value));
+                    let ret_value = if matches!(expr, Expr::LiteralNull) {
+                        // Use the current return type for null literals
+                        if let Some(return_type) = &self.current_return_type {
+                            self.generate_null_ref(return_type)
+                        } else {
+                            self.generate_expr(expr)
+                        }
+                    } else {
+                        self.generate_expr(expr)
+                    };
+                    self.emit(&format!("({}) (return)\n", ret_value));
                 } else {
                     self.emit_line("(return)");
                 }
@@ -1687,5 +1726,30 @@ mod tests {
         "#;
         let result = compile_and_run(input);
         assert_eq!(result, "1101"); // 1, 1, 0, 1
+    }
+
+    #[test]
+    fn codegen_execution_null_function_returns() {
+        let input = r#"
+            class Person {
+                int value;
+            }
+            
+            Person createPersonOrNull(boolean shouldCreate) {
+                if (shouldCreate) {
+                    return new Person();
+                } else {
+                    return null;
+                }
+            }
+            
+            void main() {
+                // Function returns object
+                Person p1 = createPersonOrNull(true);
+                print(p1.value);
+            }
+        "#;
+        let result = compile_and_run(input);
+        assert_eq!(result, "0"); // Default value 0
     }
 }
