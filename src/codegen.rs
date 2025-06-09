@@ -1618,4 +1618,36 @@ mod tests {
         let result = compile_and_run(input);
         assert_eq!(result, "102020"); // 10, 20, 20 (5+15)
     }
+
+
+    #[test]
+    fn codegen_execution_null_object_fields() {
+        let input = r#"
+            class Node {
+                int value;
+                Node next;
+            }
+            
+            void main() {
+                Node n = new Node();
+                n.value = 42;
+                n.next = null;
+                
+                // Test field is null
+                print(n.next == null); // Should print 1 (true)
+                print(n.next != null); // Should print 0 (false)
+                
+                // Test assigning object to field, then null
+                Node n2 = new Node();
+                n2.value = 10;
+                n.next = n2;
+                print(n.next == null); // Should print 0 (false)
+                
+                n.next = null;
+                print(n.next == null); // Should print 1 (true)
+            }
+        "#;
+        let result = compile_and_run(input);
+        assert_eq!(result, "1001"); // 1, 0, 0, 1
+    }
 }
