@@ -423,7 +423,7 @@ impl CodeGenerator {
                     } else {
                         self.generate_expr(expr)
                     };
-                    self.emit(&format!("({}) (return)\n", ret_value));
+                    self.emit(&format!("(return ({}))\n", ret_value));
                 } else {
                     self.emit_line("(return)");
                 }
