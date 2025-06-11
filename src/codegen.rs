@@ -159,13 +159,14 @@ impl CodeGenerator {
         
         self.generate_stmt(body);
         
-        // Check if function has proper return coverage for non-void functions
-        if return_type != "void" && !self.has_guaranteed_return(body) {
-            panic!("Compile error: Function '{}' with return type '{}' does not have a return statement on all code paths", name, return_type);
-        }
-        
         if return_type == "void" {
             self.emit_line("return");
+        } else {
+            // Check if function has proper return coverage for non-void functions
+            if !self.has_guaranteed_return(body) {
+                panic!("Compile error: Function '{}' with return type '{}' does not have a return statement on all code paths", name, return_type);
+            }
+            self.emit_line("unreachable");
         }
         self.local_vars_stack.pop();
         self.indent_level -= 1;
@@ -214,6 +215,12 @@ impl CodeGenerator {
         self.generate_stmt(body);
         if return_type == "void" {
             self.emit_line("return");
+        } else {
+            // Check if method has proper return coverage for non-void methods
+            if !self.has_guaranteed_return(body) {
+                panic!("Compile error: Method '{}.{}' with return type '{}' does not have a return statement on all code paths", class_name, method_name, return_type);
+            }
+            self.emit_line("unreachable");
         }
         self.local_vars_stack.pop();
         self.indent_level -= 1;
@@ -252,100 +259,25 @@ impl CodeGenerator {
                 self.emit(&format!("(global.set ${} ({}))\n", name, value));
             }
             Stmt::If { condition, then_block, else_block } => {
-                // Check if both branches are simple return statements (possibly wrapped in blocks)
-                let then_return_expr = match then_block.as_ref() {
-                    Stmt::Return { value: Some(expr) } => Some(expr),
-                    Stmt::Block(stmts) if stmts.len() == 1 => {
-                        if let Stmt::Return { value: Some(expr) } = &stmts[0] {
-                            Some(expr)
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                };
                 
-                let else_return_expr = match else_block.as_ref() {
-                    Some(else_stmt) => match else_stmt.as_ref() {
-                        Stmt::Return { value: Some(expr) } => Some(expr),
-                        Stmt::Block(stmts) if stmts.len() == 1 => {
-                            if let Stmt::Return { value: Some(expr) } = &stmts[0] {
-                                Some(expr)
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    },
-                    None => None,
-                };
-                
-                let is_simple_return_if = then_return_expr.is_some() && else_return_expr.is_some();
-                
-                if is_simple_return_if {
-                    // Generate if expression that produces a value
-                    let cond = self.generate_expr(condition);
-                    let result_type = if let Some(return_type) = &self.current_return_type {
-                        self.type_to_wasm(return_type)
-                    } else {
-                        "i32".to_string()
-                    };
-                    self.emit(&format!("(if (result {}) ({})\n", result_type, cond));
+                // Generate regular if statement  
+                let cond = self.generate_expr(condition);
+                self.emit(&format!("(if ({})\n", cond));
+                self.indent_level += 1;
+                self.emit_line("(then");
+                self.indent_level += 1;
+                self.generate_stmt(then_block);
+                self.indent_level -= 1;
+                self.emit_line(")");
+                if let Some(else_block) = else_block {
+                    self.emit_line("(else");
                     self.indent_level += 1;
-                    self.emit_line("(then");
-                    self.indent_level += 1;
-                    if let Some(expr) = then_return_expr {
-                        let ret_value = if matches!(expr, Expr::LiteralNull) {
-                            if let Some(return_type) = &self.current_return_type {
-                                self.generate_null_ref(return_type)
-                            } else {
-                                self.generate_expr(expr)
-                            }
-                        } else {
-                            self.generate_expr(expr)
-                        };
-                        self.emit(&format!("({})\n", ret_value));
-                    }
-                    self.indent_level -= 1;
-                    self.emit_line(")");
-                    if let Some(expr) = else_return_expr {
-                        self.emit_line("(else");
-                        self.indent_level += 1;
-                        let ret_value = if matches!(expr, Expr::LiteralNull) {
-                            if let Some(return_type) = &self.current_return_type {
-                                self.generate_null_ref(return_type)
-                            } else {
-                                self.generate_expr(expr)
-                            }
-                        } else {
-                            self.generate_expr(expr)
-                        };
-                        self.emit(&format!("({})\n", ret_value));
-                        self.indent_level -= 1;
-                        self.emit_line(")");
-                    }
-                    self.indent_level -= 1;
-                    self.emit_line(")");
-                } else {
-                    // Generate regular if statement  
-                    let cond = self.generate_expr(condition);
-                    self.emit(&format!("(if ({})\n", cond));
-                    self.indent_level += 1;
-                    self.emit_line("(then");
-                    self.indent_level += 1;
-                    self.generate_stmt(then_block);
-                    self.indent_level -= 1;
-                    self.emit_line(")");
-                    if let Some(else_block) = else_block {
-                        self.emit_line("(else");
-                        self.indent_level += 1;
-                        self.generate_stmt(else_block);
-                        self.indent_level -= 1;
-                        self.emit_line(")");
-                    }
+                    self.generate_stmt(else_block);
                     self.indent_level -= 1;
                     self.emit_line(")");
                 }
+                self.indent_level -= 1;
+                self.emit_line(")");
             }
             Stmt::While { condition, body } => {
                 self.emit_line("(block");

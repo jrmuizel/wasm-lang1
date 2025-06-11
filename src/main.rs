@@ -40,8 +40,8 @@ fn main() {
     };
     
     // Generate WASM
-    let mut codegen = CodeGenerator::new();
-    let wat_code = codegen.generate(ast);
+                let mut codegen = CodeGenerator::new();
+            let wat_code = codegen.generate(ast);
     
     // Convert WAT to WASM binary
     let wasm_binary = match wat::parse_str(&wat_code) {
