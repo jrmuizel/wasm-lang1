@@ -1434,6 +1434,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2eaf4099d8d0c922b83bf3c90663f5666f0769db9e525184284ebbbdb1dd2180"
 dependencies = [
  "bumpalo",
+ "gimli",
  "leb128fmt",
  "memchr",
  "unicode-width",

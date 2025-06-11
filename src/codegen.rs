@@ -1175,7 +1175,7 @@ mod tests {
         let mut codegen = CodeGenerator::new();
         let wat = codegen.generate(ast);
         eprintln!("{}", &wat);
-        let wasm = wat::parse_str(&wat).expect("Generated WAT should be valid");
+        let wasm = wat::Parser::default().generate_dwarf(wat::GenerateDwarf::Lines).parse_str(None, &wat).expect("Generated WAT should be valid");
 
         // Setup wasmtime
         let mut config = Config::new();
