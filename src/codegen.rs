@@ -4,6 +4,13 @@ use crate::parser::{Stmt, Expr, Token};
 use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum TargetMode {
+    Host,    // Original wasmtime host functions
+    Wasi,    // WASI-compatible output  
+    Browser, // Browser-compatible output
+}
+
 pub struct CodeGenerator {
     classes: HashMap<String, Vec<(String, String)>>,
     output: RefCell<String>,
@@ -11,11 +18,11 @@ pub struct CodeGenerator {
     local_vars_stack: Vec<HashMap<String, String>>, // Stack of local variable names to types
     current_class: Option<String>,
     current_return_type: Option<String>, // Track current function's return type
-    wasi_mode: bool, // Whether to generate WASI-compatible output
+    target_mode: TargetMode, // Target platform mode
 }
 
 impl CodeGenerator {
-    pub fn new(wasi_mode: bool) -> Self {
+    pub fn new(target_mode: TargetMode) -> Self {
         CodeGenerator {
             classes: HashMap::new(),
             output: RefCell::new(String::new()),
@@ -23,7 +30,7 @@ impl CodeGenerator {
             local_vars_stack: Vec::new(),
             current_class: None,
             current_return_type: None,
-            wasi_mode,
+            target_mode,
         }
     }
 
@@ -31,27 +38,38 @@ impl CodeGenerator {
         self.output.borrow_mut().push_str("(module\n");
         self.indent_level += 1;
 
-        if self.wasi_mode {
-            // Import WASI fd_write function
-            self.emit_line("(import \"wasi_snapshot_preview1\" \"fd_write\"");
-            self.emit_line("  (func $fd_write (param i32 i32 i32 i32) (result i32)))");
-            
-            // Define memory and export it
-            self.emit_line("(memory 1)");
-            self.emit_line("(export \"memory\" (memory 0))");
-            
-            // Global memory pointer for string formatting
-            self.emit_line("(global $memory_offset (mut i32) (i32.const 1024))");
-        } else {
-            // Import print functions (original behavior)
-            self.emit_line("(import \"host\" \"printInt\" (func $printInt (param i32)))");
-            self.emit_line("(import \"host\" \"printBool\" (func $printBool (param i32)))");
-            self.emit_line("(import \"host\" \"printString\" (func $printString (param (ref array))))");
-            self.emit_line("(import \"host\" \"printFloat\" (func $printFloat (param f32)))");
-            self.emit_line("(import \"host\" \"printlnInt\" (func $printlnInt (param i32)))");
-            self.emit_line("(import \"host\" \"printlnBool\" (func $printlnBool (param i32)))");
-            self.emit_line("(import \"host\" \"printlnString\" (func $printlnString (param (ref array))))");
-            self.emit_line("(import \"host\" \"printlnFloat\" (func $printlnFloat (param f32)))");
+        match self.target_mode {
+            TargetMode::Wasi => {
+                // Import WASI fd_write function
+                self.emit_line("(import \"wasi_snapshot_preview1\" \"fd_write\"");
+                self.emit_line("  (func $fd_write (param i32 i32 i32 i32) (result i32)))");
+                
+                // Define memory and export it
+                self.emit_line("(memory 1)");
+                self.emit_line("(export \"memory\" (memory 0))");
+                
+                // Global memory pointer for string formatting
+                self.emit_line("(global $memory_offset (mut i32) (i32.const 1024))");
+            }
+            TargetMode::Browser => {
+                // Define memory and export it for browser
+                self.emit_line("(memory 1)");
+                self.emit_line("(export \"memory\" (memory 0))");
+                
+                // Global memory pointer for string formatting
+                self.emit_line("(global $memory_offset (mut i32) (i32.const 1024))");
+            }
+            TargetMode::Host => {
+                // Import print functions (original behavior)
+                self.emit_line("(import \"host\" \"printInt\" (func $printInt (param i32)))");
+                self.emit_line("(import \"host\" \"printBool\" (func $printBool (param i32)))");
+                self.emit_line("(import \"host\" \"printString\" (func $printString (param (ref array))))");
+                self.emit_line("(import \"host\" \"printFloat\" (func $printFloat (param f32)))");
+                self.emit_line("(import \"host\" \"printlnInt\" (func $printlnInt (param i32)))");
+                self.emit_line("(import \"host\" \"printlnBool\" (func $printlnBool (param i32)))");
+                self.emit_line("(import \"host\" \"printlnString\" (func $printlnString (param (ref array))))");
+                self.emit_line("(import \"host\" \"printlnFloat\" (func $printlnFloat (param f32)))");
+            }
         }
 
         // Define String type
@@ -101,9 +119,17 @@ impl CodeGenerator {
             self.emit_line(&format!("(type {} (array (mut {})))", type_name, elem_type));
         }
 
-        // Generate WASI helper functions if in WASI mode
-        if self.wasi_mode {
-            self.generate_wasi_helper_functions();
+        // Generate helper functions based on target mode
+        match self.target_mode {
+            TargetMode::Wasi => {
+                self.generate_wasi_helper_functions();
+            }
+            TargetMode::Browser => {
+                self.generate_browser_helper_functions();
+            }
+            TargetMode::Host => {
+                // No helper functions needed for host mode
+            }
         }
 
         // Generate functions and methods
@@ -133,10 +159,13 @@ impl CodeGenerator {
 
         // Generate main function if present
         if let Some(_main) = self.find_main(&stmts) {
-            if self.wasi_mode {
-                self.emit_line("(export \"_start\" (func $main))");
-            } else {
-                self.emit_line("(export \"main\" (func $main))");
+            match self.target_mode {
+                TargetMode::Wasi => {
+                    self.emit_line("(export \"_start\" (func $main))");
+                }
+                TargetMode::Browser | TargetMode::Host => {
+                    self.emit_line("(export \"main\" (func $main))");
+                }
             }
         }
 
@@ -345,46 +374,72 @@ impl CodeGenerator {
             }
             Stmt::Print(expr) => {
                 let value = self.generate_expr(expr);
-                if self.wasi_mode {
-                    // In WASI mode, use WASI print functions
-                    let print_func = match self.infer_type(expr) {
-                        Some("int") => "$wasiPrintInt",
-                        Some("boolean") => "$wasiPrintBool", 
-                        Some("String") => "$wasiPrintString",
-                        _ => "$wasiPrintInt", // Default to int for now
-                    };
-                    self.emit(&format!("(call {} ({}))\n", print_func, value));
-                } else {
-                    // Original host function approach
-                    let print_func = match self.infer_type(expr) {
-                        Some("int") => "$printInt",
-                        Some("boolean") => "$printBool",
-                        Some("String") => "$printString",
-                        _ => "$printInt", // Default to int for now
-                    };
-                    self.emit(&format!("(call {} ({}))\n", print_func, value));
+                match self.target_mode {
+                    TargetMode::Wasi => {
+                        // In WASI mode, use WASI print functions
+                        let print_func = match self.infer_type(expr) {
+                            Some("int") => "$wasiPrintInt",
+                            Some("boolean") => "$wasiPrintBool", 
+                            Some("String") => "$wasiPrintString",
+                            _ => "$wasiPrintInt", // Default to int for now
+                        };
+                        self.emit(&format!("(call {} ({}))\n", print_func, value));
+                    }
+                    TargetMode::Browser => {
+                        // In browser mode, use browser print functions
+                        let print_func = match self.infer_type(expr) {
+                            Some("int") => "$browserPrintInt",
+                            Some("boolean") => "$browserPrintBool", 
+                            Some("String") => "$browserPrintString",
+                            _ => "$browserPrintInt", // Default to int for now
+                        };
+                        self.emit(&format!("(call {} ({}))\n", print_func, value));
+                    }
+                    TargetMode::Host => {
+                        // Original host function approach
+                        let print_func = match self.infer_type(expr) {
+                            Some("int") => "$printInt",
+                            Some("boolean") => "$printBool",
+                            Some("String") => "$printString",
+                            _ => "$printInt", // Default to int for now
+                        };
+                        self.emit(&format!("(call {} ({}))\n", print_func, value));
+                    }
                 }
             }
             Stmt::Println(expr) => {
                 let value = self.generate_expr(expr);
-                if self.wasi_mode {
-                    // In WASI mode, use WASI println functions
-                    let println_func = match self.infer_type(expr) {
-                        Some("int") => "$wasiPrintlnInt",
-                        Some("boolean") => "$wasiPrintlnBool",
-                        Some("String") => "$wasiPrintlnString",
-                        _ => "$wasiPrintlnInt", // Default to int for now
-                    };
-                    self.emit(&format!("(call {} ({}))\n", println_func, value));
-                } else {
-                    // Original host function approach
-                    let println_func = match self.infer_type(expr) {
-                        Some("int") => "$printlnInt",
-                        Some("boolean") => "$printlnBool",
-                        Some("String") => "$printlnString",
-                        _ => "$printlnInt", // Default to int for now
-                    };
-                    self.emit(&format!("(call {} ({}))\n", println_func, value));
+                match self.target_mode {
+                    TargetMode::Wasi => {
+                        // In WASI mode, use WASI println functions
+                        let println_func = match self.infer_type(expr) {
+                            Some("int") => "$wasiPrintlnInt",
+                            Some("boolean") => "$wasiPrintlnBool",
+                            Some("String") => "$wasiPrintlnString",
+                            _ => "$wasiPrintlnInt", // Default to int for now
+                        };
+                        self.emit(&format!("(call {} ({}))\n", println_func, value));
+                    }
+                    TargetMode::Browser => {
+                        // In browser mode, use browser println functions
+                        let println_func = match self.infer_type(expr) {
+                            Some("int") => "$browserPrintlnInt",
+                            Some("boolean") => "$browserPrintlnBool",
+                            Some("String") => "$browserPrintlnString",
+                            _ => "$browserPrintlnInt", // Default to int for now
+                        };
+                        self.emit(&format!("(call {} ({}))\n", println_func, value));
+                    }
+                    TargetMode::Host => {
+                        // Original host function approach
+                        let println_func = match self.infer_type(expr) {
+                            Some("int") => "$printlnInt",
+                            Some("boolean") => "$printlnBool",
+                            Some("String") => "$printlnString",
+                            _ => "$printlnInt", // Default to int for now
+                        };
+                        self.emit(&format!("(call {} ({}))\n", println_func, value));
+                    }
                 }
             }
             Stmt::Return { value } => {
@@ -1088,6 +1143,187 @@ impl CodeGenerator {
         self.emit_line("(data (i32.const 516) \"false\")");
         self.emit_line("(data (i32.const 520) \"\\n\")");
     }
+
+    fn generate_browser_helper_functions(&mut self) {
+        // Export browser helper functions that will be called from JS
+        
+        // Function to print integers
+        self.emit_line("(func $browserPrintInt (param $val i32)");
+        self.indent_level += 1;
+        self.emit_line("(local $ptr i32) (local $len i32) (local $temp i32) (local $digit i32) (local $is_negative i32) (local $start i32) (local $end i32) (local $char i32)");
+        
+        // Use a fixed memory region for integer conversion
+        self.emit_line("(local.set $ptr (i32.const 2560))");
+        
+        // Handle zero
+        self.emit_line("(if (i32.eqz (local.get $val))");
+        self.emit_line("  (then");
+        self.emit_line("    (i32.store8 (local.get $ptr) (i32.const 48))");
+        self.emit_line("    (call $browserWriteToOutput (local.get $ptr) (i32.const 1))");
+        self.emit_line("    (return)");
+        self.emit_line("  ))");
+        
+        // Handle negative
+        self.emit_line("(local.set $is_negative (i32.lt_s (local.get $val) (i32.const 0)))");
+        self.emit_line("(if (local.get $is_negative)");
+        self.emit_line("  (then");
+        self.emit_line("    (local.set $val (i32.sub (i32.const 0) (local.get $val)))");
+        self.emit_line("    (i32.store8 (local.get $ptr) (i32.const 45))");
+        self.emit_line("    (local.set $start (i32.const 1))");
+        self.emit_line("  )");
+        self.emit_line("  (else");
+        self.emit_line("    (local.set $start (i32.const 0))");
+        self.emit_line("  )");
+        self.emit_line(")");
+        
+        // Convert digits (in reverse order)
+        self.emit_line("(local.set $temp (local.get $val))");
+        self.emit_line("(local.set $len (local.get $start))");
+        self.emit_line("(loop $digit_loop");
+        self.emit_line("  (local.set $digit (i32.rem_u (local.get $temp) (i32.const 10)))");
+        self.emit_line("  (local.set $temp (i32.div_u (local.get $temp) (i32.const 10)))");
+        self.emit_line("  (i32.store8 (i32.add (local.get $ptr) (local.get $len)) (i32.add (local.get $digit) (i32.const 48)))");
+        self.emit_line("  (local.set $len (i32.add (local.get $len) (i32.const 1)))");
+        self.emit_line("  (br_if $digit_loop (i32.ne (local.get $temp) (i32.const 0)))");
+        self.emit_line(")");
+        
+        // Reverse the digits
+        self.emit_line("(local.set $end (i32.sub (local.get $len) (i32.const 1)))");
+        self.emit_line("(block $reverse_done");
+        self.emit_line("  (loop $reverse_loop");
+        self.emit_line("    (br_if $reverse_done (i32.ge_u (local.get $start) (local.get $end)))");
+        self.emit_line("    (local.set $char (i32.load8_u (i32.add (local.get $ptr) (local.get $start))))");
+        self.emit_line("    (i32.store8 (i32.add (local.get $ptr) (local.get $start)) (i32.load8_u (i32.add (local.get $ptr) (local.get $end))))");
+        self.emit_line("    (i32.store8 (i32.add (local.get $ptr) (local.get $end)) (local.get $char))");
+        self.emit_line("    (local.set $start (i32.add (local.get $start) (i32.const 1)))");
+        self.emit_line("    (local.set $end (i32.sub (local.get $end) (i32.const 1)))");
+        self.emit_line("    (br $reverse_loop)");
+        self.emit_line("  )");
+        self.emit_line(")");
+        
+        self.emit_line("(call $browserWriteToOutput (local.get $ptr) (local.get $len))");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        // Function to print booleans
+        self.emit_line("(func $browserPrintBool (param $val i32)");
+        self.indent_level += 1;
+        self.emit_line("(if (local.get $val)");
+        self.emit_line("  (then (call $browserWriteToOutput (i32.const 512) (i32.const 4)))");  
+        self.emit_line("  (else (call $browserWriteToOutput (i32.const 516) (i32.const 5)))");
+        self.emit_line(")");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        // Function to print strings
+        self.emit_line("(func $browserPrintString (param $str (ref null $String))");
+        self.indent_level += 1;
+        self.emit_line("(local $len i32) (local $ptr i32) (local $i i32)");
+        
+        // Check for null reference
+        self.emit_line("(if (ref.is_null (local.get $str))");
+        self.emit_line("  (then (return))");
+        self.emit_line(")");
+        
+        self.emit_line("(local.set $len (array.len (local.get $str)))");
+        self.emit_line("(local.set $ptr (i32.const 2048))");
+        
+        // Copy string to memory
+        self.emit_line("(local.set $i (i32.const 0))");
+        self.emit_line("(block $copy_done");
+        self.emit_line("  (loop $copy_loop");
+        self.emit_line("    (br_if $copy_done (i32.ge_u (local.get $i) (local.get $len)))");
+        self.emit_line("    (i32.store8 (i32.add (local.get $ptr) (local.get $i))");
+        self.emit_line("      (array.get_u $String (local.get $str) (local.get $i)))");
+        self.emit_line("    (local.set $i (i32.add (local.get $i) (i32.const 1)))");
+        self.emit_line("    (br $copy_loop)");
+        self.emit_line("  )");
+        self.emit_line(")");
+        
+        self.emit_line("(call $browserWriteToOutput (local.get $ptr) (local.get $len))");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        // Println variants
+        self.emit_line("(func $browserPrintlnInt (param $val i32)");
+        self.indent_level += 1;
+        self.emit_line("(call $browserPrintInt (local.get $val))");
+        self.emit_line("(call $browserWriteToOutput (i32.const 520) (i32.const 1))");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        self.emit_line("(func $browserPrintlnBool (param $val i32)");
+        self.indent_level += 1;
+        self.emit_line("(call $browserPrintBool (local.get $val))");
+        self.emit_line("(call $browserWriteToOutput (i32.const 520) (i32.const 1))");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        self.emit_line("(func $browserPrintlnString (param $str (ref null $String))");
+        self.indent_level += 1;
+        self.emit_line("(call $browserPrintString (local.get $str))");
+        self.emit_line("(call $browserWriteToOutput (i32.const 520) (i32.const 1))");
+        self.indent_level -= 1;
+        self.emit_line(")");
+
+        // Browser helper function that writes to a global output buffer
+        // This will be called by the print functions to accumulate output
+        self.emit_line("(func $browserWriteToOutput (param $ptr i32) (param $len i32)");
+        self.indent_level += 1;
+        self.emit_line("(local $i i32) (local $output_ptr i32) (local $current_len i32)");
+        
+        // Output buffer starts at memory location 3072, length at 3068
+        self.emit_line("(local.set $current_len (i32.load (i32.const 3068)))");
+        self.emit_line("(local.set $output_ptr (i32.add (i32.const 3072) (local.get $current_len)))");
+        
+        // Copy data to output buffer
+        self.emit_line("(local.set $i (i32.const 0))");
+        self.emit_line("(block $copy_done");
+        self.emit_line("  (loop $copy_loop");
+        self.emit_line("    (br_if $copy_done (i32.ge_u (local.get $i) (local.get $len)))");
+        self.emit_line("    (i32.store8 (i32.add (local.get $output_ptr) (local.get $i))");
+        self.emit_line("      (i32.load8_u (i32.add (local.get $ptr) (local.get $i))))");
+        self.emit_line("    (local.set $i (i32.add (local.get $i) (i32.const 1)))");
+        self.emit_line("    (br $copy_loop)");
+        self.emit_line("  )");
+        self.emit_line(")");
+        
+        // Update output buffer length
+        self.emit_line("(i32.store (i32.const 3068) (i32.add (local.get $current_len) (local.get $len)))");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        // Export functions for browser access
+        self.emit_line("(export \"getOutputPtr\" (func $getOutputPtr))");
+        self.emit_line("(export \"getOutputLen\" (func $getOutputLen))");
+        self.emit_line("(export \"clearOutput\" (func $clearOutput))");
+        
+        // Function to get output buffer pointer
+        self.emit_line("(func $getOutputPtr (result i32)");
+        self.indent_level += 1;
+        self.emit_line("(i32.const 3072)");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        // Function to get output buffer length
+        self.emit_line("(func $getOutputLen (result i32)");
+        self.indent_level += 1;
+        self.emit_line("(i32.load (i32.const 3068))");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        // Function to clear output buffer
+        self.emit_line("(func $clearOutput");
+        self.indent_level += 1;
+        self.emit_line("(i32.store (i32.const 3068) (i32.const 0))");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        // Store static strings in memory
+        self.emit_line("(data (i32.const 512) \"true\")");
+        self.emit_line("(data (i32.const 516) \"false\")");
+        self.emit_line("(data (i32.const 520) \"\\n\")");
+    }
 }
 
 #[cfg(test)]
@@ -1115,7 +1351,7 @@ mod tests {
             }
         "#;
         let ast = parse(input);
-        let mut codegen = CodeGenerator::new(false);
+        let mut codegen = CodeGenerator::new(TargetMode::Host);
         let wat = codegen.generate(ast);
         // wat::parse_str will error if the WAT is invalid
         parse_str(&wat).expect("Generated WAT should be valid");
@@ -1137,7 +1373,7 @@ mod tests {
             }
         "#;
         let ast = parse(input);
-        let mut codegen = CodeGenerator::new(false);
+        let mut codegen = CodeGenerator::new(TargetMode::Host);
         let wat = codegen.generate(ast);
         parse_str(&wat).expect("Generated WAT should be valid for class and method");
     }
@@ -1155,7 +1391,7 @@ mod tests {
             }
         "#;
         let ast = parse(input);
-        let mut codegen = CodeGenerator::new(false);
+        let mut codegen = CodeGenerator::new(TargetMode::Host);
         let wat = codegen.generate(ast);
         parse_str(&wat).expect("Generated WAT should be valid for if/else");
     }
@@ -1172,7 +1408,7 @@ mod tests {
             }
         "#;
         let ast = parse(input);
-        let mut codegen = CodeGenerator::new(false);
+        let mut codegen = CodeGenerator::new(TargetMode::Host);
         let wat = codegen.generate(ast);
         parse_str(&wat).expect("Generated WAT should be valid for while loop");
     }
@@ -1235,7 +1471,7 @@ mod tests {
             }
         "#;
         let ast = parse(input);
-        let mut codegen = CodeGenerator::new(false);
+        let mut codegen = CodeGenerator::new(TargetMode::Host);
         let wat = codegen.generate(ast);
         parse_str(&wat).expect("Generated WAT should be valid for return statement");
     }
@@ -1252,7 +1488,7 @@ mod tests {
             }
         "#;
         let ast = parse(input);
-        let mut codegen = CodeGenerator::new(false);
+        let mut codegen = CodeGenerator::new(TargetMode::Host);
         let wat = codegen.generate(ast);
         parse_str(&wat).expect("Generated WAT should be valid for function call");
     }
@@ -1301,7 +1537,7 @@ mod tests {
         use wasmtime::{Engine, Module, Store, Linker, Config};
         use std::sync::{Arc, Mutex};
         let ast = parse(input);
-        let mut codegen = CodeGenerator::new(false);
+        let mut codegen = CodeGenerator::new(TargetMode::Host);
         let wat = codegen.generate(ast);
         eprintln!("{}", &wat);
         let wasm = wat::Parser::default().generate_dwarf(wat::GenerateDwarf::Lines).parse_str(None, &wat).expect("Generated WAT should be valid");

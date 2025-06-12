@@ -14,6 +14,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     
     let mut wasi_mode = false;
+    let mut browser_mode = false;
     let mut filename = String::new();
     
     // Parse command line arguments
@@ -24,20 +25,24 @@ fn main() {
                 wasi_mode = true;
                 i += 1;
             }
+            "--browser" => {
+                browser_mode = true;
+                i += 1;
+            }
             arg if !arg.starts_with('-') => {
                 filename = arg.to_string();
                 i += 1;
             }
             _ => {
                 eprintln!("Unknown argument: {}", args[i]);
-                eprintln!("Usage: {} [--wasi] <source_file>", args[0]);
+                eprintln!("Usage: {} [--wasi|--browser] <source_file>", args[0]);
                 process::exit(1);
             }
         }
     }
     
     if filename.is_empty() {
-        eprintln!("Usage: {} [--wasi] <source_file>", args[0]);
+        eprintln!("Usage: {} [--wasi|--browser] <source_file>", args[0]);
         process::exit(1);
     }
     
@@ -62,7 +67,15 @@ fn main() {
     };
     
     // Generate WASM
-    let mut codegen = CodeGenerator::new(wasi_mode);
+    let target_mode = if wasi_mode {
+        codegen::TargetMode::Wasi
+    } else if browser_mode {
+        codegen::TargetMode::Browser
+    } else {
+        codegen::TargetMode::Host
+    };
+    
+    let mut codegen = CodeGenerator::new(target_mode);
     let wat_code = codegen.generate(ast);
     
     if wasi_mode {
@@ -77,6 +90,12 @@ fn main() {
                 process::exit(1);
             }
         }
+        return;
+    }
+    
+    if browser_mode {
+        // Generate browser-compatible files
+        generate_browser_files(&filename, &wat_code);
         return;
     }
     
@@ -172,4 +191,163 @@ fn execute_wasm(wasm_binary: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+fn generate_browser_files(filename: &str, wat_code: &str) {
+    // Generate .wasm file
+    let wasm_binary = match wat::Parser::default().generate_dwarf(wat::GenerateDwarf::Lines).parse_str(Some(Path::new(&filename)), &wat_code) {
+        Ok(binary) => binary,
+        Err(e) => {
+            eprintln!("WAT compilation error: {}", e);
+            eprintln!("Generated WAT:\n{}", wat_code);
+            process::exit(1);
+        }
+    };
+    
+    let wasm_filename = filename.replace(".lang", ".wasm");
+    match fs::write(&wasm_filename, &wasm_binary) {
+        Ok(()) => {
+            println!("Generated WASM file: {}", wasm_filename);
+        }
+        Err(e) => {
+            eprintln!("Error writing WASM file '{}': {}", wasm_filename, e);
+            process::exit(1);
+        }
+    }
+    
+    // Generate HTML file
+    let html_filename = filename.replace(".lang", ".html");
+    let html_content = generate_html_template(&wasm_filename);
+    match fs::write(&html_filename, &html_content) {
+        Ok(()) => {
+            println!("Generated HTML file: {}", html_filename);
+            println!("Open {} in a web browser to run the program", html_filename);
+        }
+        Err(e) => {
+            eprintln!("Error writing HTML file '{}': {}", html_filename, e);
+            process::exit(1);
+        }
+    }
+}
+
+fn generate_html_template(wasm_filename: &str) -> String {
+    format!(r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>Lang1 WebAssembly Runner</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }}
+        #output {{
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+            min-height: 100px;
+            border: 1px solid #ddd;
+        }}
+        button {{
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px 5px 10px 0;
+        }}
+        button:hover {{
+            background: #0056b3;
+        }}
+        .error {{
+            color: red;
+            font-weight: bold;
+        }}
+    </style>
+</head>
+<body>
+    <h1>Lang1 WebAssembly Runner</h1>
+    <p>This page runs your compiled Lang1 program in WebAssembly.</p>
+    
+    <button onclick="runProgram()">Run Program</button>
+    <button onclick="clearOutput()">Clear Output</button>
+    
+    <h2>Output:</h2>
+    <div id="output"></div>
+
+    <script>
+        let wasmInstance = null;
+        let wasmMemory = null;
+        
+        async function loadWasm() {{
+            try {{
+                const wasmModule = await WebAssembly.instantiateStreaming(fetch('{wasm_filename}'));
+                wasmInstance = wasmModule.instance;
+                wasmMemory = wasmInstance.exports.memory;
+                
+                // Clear output buffer
+                wasmInstance.exports.clearOutput();
+                
+                console.log('WebAssembly module loaded successfully');
+                return true;
+            }} catch (error) {{
+                console.error('Error loading WebAssembly:', error);
+                document.getElementById('output').innerHTML = '<span class="error">Error loading WebAssembly: ' + error.message + '</span>';
+                return false;
+            }}
+        }}
+        
+        function getOutput() {{
+            if (!wasmInstance || !wasmMemory) return '';
+            
+            const outputPtr = wasmInstance.exports.getOutputPtr();
+            const outputLen = wasmInstance.exports.getOutputLen();
+            
+            if (outputLen === 0) return '';
+            
+            const buffer = new Uint8Array(wasmMemory.buffer, outputPtr, outputLen);
+            return new TextDecoder().decode(buffer);
+        }}
+        
+        async function runProgram() {{
+            const outputElement = document.getElementById('output');
+            
+            if (!wasmInstance) {{
+                const loaded = await loadWasm();
+                if (!loaded) return;
+            }}
+            
+            try {{
+                // Clear previous output
+                wasmInstance.exports.clearOutput();
+                
+                // Run the main function
+                wasmInstance.exports.main();
+                
+                // Get the output and display it
+                const output = getOutput();
+                outputElement.textContent = output || '(no output)';
+                
+            }} catch (error) {{
+                console.error('Error running program:', error);
+                outputElement.innerHTML = '<span class="error">Runtime error: ' + error.message + '</span>';
+            }}
+        }}
+        
+        function clearOutput() {{
+            document.getElementById('output').textContent = '';
+            if (wasmInstance) {{
+                wasmInstance.exports.clearOutput();
+            }}
+        }}
+        
+        // Load WebAssembly on page load
+        window.addEventListener('load', loadWasm);
+    </script>
+</body>
+</html>"#, wasm_filename = wasm_filename)
 }
