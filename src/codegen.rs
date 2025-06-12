@@ -1032,7 +1032,7 @@ impl CodeGenerator {
         // Function to print strings
         self.emit_line("(func $wasiPrintString (param $str (ref null $String))");
         self.indent_level += 1;
-        self.emit_line("(local $len i32) (local $ptr i32) (local $i i32) (local $aligned_len i32)");
+        self.emit_line("(local $len i32) (local $ptr i32) (local $i i32)");
         
         // Check for null reference
         self.emit_line("(if (ref.is_null (local.get $str))");
@@ -1045,14 +1045,16 @@ impl CodeGenerator {
         // This region starts at 2048 (well above the default memory_offset at 1024) and allows up to 512 bytes for string content
         self.emit_line("(local.set $ptr (i32.const 2048))");
         
-        // Copy string to memory
+        // Copy string to memory with corrected loop structure
         self.emit_line("(local.set $i (i32.const 0))");
-        self.emit_line("(loop $copy_loop");
-        self.emit_line("  (br_if 1 (i32.ge_u (local.get $i) (local.get $len)))");
-        self.emit_line("  (i32.store8 (i32.add (local.get $ptr) (local.get $i))");
-        self.emit_line("    (array.get_u $String (local.get $str) (local.get $i)))");
-        self.emit_line("  (local.set $i (i32.add (local.get $i) (i32.const 1)))");
-        self.emit_line("  (br $copy_loop)");
+        self.emit_line("(block $copy_done");
+        self.emit_line("  (loop $copy_loop");
+        self.emit_line("    (br_if $copy_done (i32.ge_u (local.get $i) (local.get $len)))");
+        self.emit_line("    (i32.store8 (i32.add (local.get $ptr) (local.get $i))");
+        self.emit_line("      (array.get_u $String (local.get $str) (local.get $i)))");
+        self.emit_line("    (local.set $i (i32.add (local.get $i) (i32.const 1)))");
+        self.emit_line("    (br $copy_loop)");
+        self.emit_line("  )");
         self.emit_line(")");
         
         self.emit_line("(call $wasiWriteString (local.get $ptr) (local.get $len))");
