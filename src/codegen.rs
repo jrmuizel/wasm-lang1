@@ -11,10 +11,11 @@ pub struct CodeGenerator {
     local_vars_stack: Vec<HashMap<String, String>>, // Stack of local variable names to types
     current_class: Option<String>,
     current_return_type: Option<String>, // Track current function's return type
+    wasi_mode: bool, // Whether to generate WASI-compatible output
 }
 
 impl CodeGenerator {
-    pub fn new() -> Self {
+    pub fn new(wasi_mode: bool) -> Self {
         CodeGenerator {
             classes: HashMap::new(),
             output: RefCell::new(String::new()),
@@ -22,6 +23,7 @@ impl CodeGenerator {
             local_vars_stack: Vec::new(),
             current_class: None,
             current_return_type: None,
+            wasi_mode,
         }
     }
 
@@ -29,15 +31,28 @@ impl CodeGenerator {
         self.output.borrow_mut().push_str("(module\n");
         self.indent_level += 1;
 
-        // Import print functions
-        self.emit_line("(import \"host\" \"printInt\" (func $printInt (param i32)))");
-        self.emit_line("(import \"host\" \"printBool\" (func $printBool (param i32)))");
-        self.emit_line("(import \"host\" \"printString\" (func $printString (param (ref array))))");
-        self.emit_line("(import \"host\" \"printFloat\" (func $printFloat (param f32)))");
-        self.emit_line("(import \"host\" \"printlnInt\" (func $printlnInt (param i32)))");
-        self.emit_line("(import \"host\" \"printlnBool\" (func $printlnBool (param i32)))");
-        self.emit_line("(import \"host\" \"printlnString\" (func $printlnString (param (ref array))))");
-        self.emit_line("(import \"host\" \"printlnFloat\" (func $printlnFloat (param f32)))");
+        if self.wasi_mode {
+            // Import WASI fd_write function
+            self.emit_line("(import \"wasi_snapshot_preview1\" \"fd_write\"");
+            self.emit_line("  (func $fd_write (param i32 i32 i32 i32) (result i32)))");
+            
+            // Define memory and export it
+            self.emit_line("(memory 1)");
+            self.emit_line("(export \"memory\" (memory 0))");
+            
+            // Global memory pointer for string formatting
+            self.emit_line("(global $memory_offset (mut i32) (i32.const 1024))");
+        } else {
+            // Import print functions (original behavior)
+            self.emit_line("(import \"host\" \"printInt\" (func $printInt (param i32)))");
+            self.emit_line("(import \"host\" \"printBool\" (func $printBool (param i32)))");
+            self.emit_line("(import \"host\" \"printString\" (func $printString (param (ref array))))");
+            self.emit_line("(import \"host\" \"printFloat\" (func $printFloat (param f32)))");
+            self.emit_line("(import \"host\" \"printlnInt\" (func $printlnInt (param i32)))");
+            self.emit_line("(import \"host\" \"printlnBool\" (func $printlnBool (param i32)))");
+            self.emit_line("(import \"host\" \"printlnString\" (func $printlnString (param (ref array))))");
+            self.emit_line("(import \"host\" \"printlnFloat\" (func $printlnFloat (param f32)))");
+        }
 
         // Define String type
         self.emit_line("(type $String (array i8))");
@@ -86,6 +101,11 @@ impl CodeGenerator {
             self.emit_line(&format!("(type {} (array (mut {})))", type_name, elem_type));
         }
 
+        // Generate WASI helper functions if in WASI mode
+        if self.wasi_mode {
+            self.generate_wasi_helper_functions();
+        }
+
         // Generate functions and methods
         for stmt in &stmts {
             match stmt {
@@ -112,8 +132,12 @@ impl CodeGenerator {
         }
 
         // Generate main function if present
-        if let Some(main) = self.find_main(&stmts) {
-            self.emit_line("(export \"main\" (func $main))");
+        if let Some(_main) = self.find_main(&stmts) {
+            if self.wasi_mode {
+                self.emit_line("(export \"_start\" (func $main))");
+            } else {
+                self.emit_line("(export \"main\" (func $main))");
+            }
         }
 
         self.indent_level -= 1;
@@ -321,27 +345,47 @@ impl CodeGenerator {
             }
             Stmt::Print(expr) => {
                 let value = self.generate_expr(expr);
-                // Determine the type of the expression for correct print function
-                let print_func = match self.infer_type(expr) {
-                    Some("int") => "$printInt",
-                    Some("boolean") => "$printBool",
-                    Some("String") => "$printString",
-                    _ => "$printInt", // Default to int for now
-                };
-                // Emit the value first, then the call
-                self.emit(&format!("(call {} ({}))\n", print_func, value));
+                if self.wasi_mode {
+                    // In WASI mode, use WASI print functions
+                    let print_func = match self.infer_type(expr) {
+                        Some("int") => "$wasiPrintInt",
+                        Some("boolean") => "$wasiPrintBool", 
+                        Some("String") => "$wasiPrintString",
+                        _ => "$wasiPrintInt", // Default to int for now
+                    };
+                    self.emit(&format!("(call {} ({}))\n", print_func, value));
+                } else {
+                    // Original host function approach
+                    let print_func = match self.infer_type(expr) {
+                        Some("int") => "$printInt",
+                        Some("boolean") => "$printBool",
+                        Some("String") => "$printString",
+                        _ => "$printInt", // Default to int for now
+                    };
+                    self.emit(&format!("(call {} ({}))\n", print_func, value));
+                }
             }
             Stmt::Println(expr) => {
                 let value = self.generate_expr(expr);
-                // Determine the type of the expression for correct println function
-                let println_func = match self.infer_type(expr) {
-                    Some("int") => "$printlnInt",
-                    Some("boolean") => "$printlnBool",
-                    Some("String") => "$printlnString",
-                    _ => "$printlnInt", // Default to int for now
-                };
-                // Emit the value first, then the call
-                self.emit(&format!("(call {} ({}))\n", println_func, value));
+                if self.wasi_mode {
+                    // In WASI mode, use WASI println functions
+                    let println_func = match self.infer_type(expr) {
+                        Some("int") => "$wasiPrintlnInt",
+                        Some("boolean") => "$wasiPrintlnBool",
+                        Some("String") => "$wasiPrintlnString",
+                        _ => "$wasiPrintlnInt", // Default to int for now
+                    };
+                    self.emit(&format!("(call {} ({}))\n", println_func, value));
+                } else {
+                    // Original host function approach
+                    let println_func = match self.infer_type(expr) {
+                        Some("int") => "$printlnInt",
+                        Some("boolean") => "$printlnBool",
+                        Some("String") => "$printlnString",
+                        _ => "$printlnInt", // Default to int for now
+                    };
+                    self.emit(&format!("(call {} ({}))\n", println_func, value));
+                }
             }
             Stmt::Return { value } => {
                 if let Some(expr) = value {
@@ -891,6 +935,156 @@ impl CodeGenerator {
             _ => "ref.null $Object".to_string(),
         }
     }
+
+    fn generate_wasi_helper_functions(&mut self) {
+        // Helper function to write a string to stdout using WASI fd_write
+        self.emit_line("(func $wasiWriteString (param $ptr i32) (param $len i32)");
+        self.indent_level += 1;
+        self.emit_line("(local $iovec_ptr i32)");
+        self.emit_line("(local $nwritten_ptr i32)");
+        
+        // Ensure current memory offset is 4-byte aligned
+        self.emit_line("(global.set $memory_offset");
+        self.emit_line("  (i32.and (i32.add (global.get $memory_offset) (i32.const 3)) (i32.const -4)))");
+        
+        // Allocate space for iovec structure (8 bytes) and nwritten (4 bytes)
+        self.emit_line("(local.set $iovec_ptr (global.get $memory_offset))");
+        self.emit_line("(local.set $nwritten_ptr (i32.add (local.get $iovec_ptr) (i32.const 8)))");
+        
+        // Update memory offset for next allocation
+        self.emit_line("(global.set $memory_offset (i32.add (local.get $nwritten_ptr) (i32.const 4)))");
+        
+        // Set up iovec structure
+        self.emit_line("(i32.store (local.get $iovec_ptr) (local.get $ptr))");
+        self.emit_line("(i32.store (i32.add (local.get $iovec_ptr) (i32.const 4)) (local.get $len))");
+        
+        // Call fd_write
+        self.emit_line("(call $fd_write");
+        self.emit_line("  (i32.const 1) (local.get $iovec_ptr) (i32.const 1) (local.get $nwritten_ptr))");
+        self.emit_line("drop");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        // Function to print integers
+        self.emit_line("(func $wasiPrintInt (param $val i32)");
+        self.indent_level += 1;
+        self.emit_line("(local $ptr i32) (local $len i32) (local $temp i32) (local $digit i32) (local $is_negative i32) (local $start i32) (local $end i32) (local $char i32)");
+        
+        // Allocate aligned memory for string buffer (12 bytes, already 4-byte aligned)
+        self.emit_line("(local.set $ptr (global.get $memory_offset))");
+        self.emit_line("(global.set $memory_offset (i32.add (global.get $memory_offset) (i32.const 12)))");
+        
+        // Handle zero
+        self.emit_line("(if (i32.eqz (local.get $val))");
+        self.emit_line("  (then");
+        self.emit_line("    (i32.store8 (local.get $ptr) (i32.const 48))");
+        self.emit_line("    (call $wasiWriteString (local.get $ptr) (i32.const 1))");
+        self.emit_line("    (return)");
+        self.emit_line("  ))");
+        
+        // Handle negative
+        self.emit_line("(local.set $is_negative (i32.lt_s (local.get $val) (i32.const 0)))");
+        self.emit_line("(if (local.get $is_negative)");
+        self.emit_line("  (then");
+        self.emit_line("    (local.set $val (i32.sub (i32.const 0) (local.get $val)))");
+        self.emit_line("    (i32.store8 (local.get $ptr) (i32.const 45))");
+        self.emit_line("    (local.set $start (i32.const 1))");
+        self.emit_line("  )");
+        self.emit_line("  (else");
+        self.emit_line("    (local.set $start (i32.const 0))");
+        self.emit_line("  )");
+        self.emit_line(")");
+        
+        // Convert digits (in reverse order)
+        self.emit_line("(local.set $temp (local.get $val))");
+        self.emit_line("(local.set $len (local.get $start))");
+        self.emit_line("(loop $digit_loop");
+        self.emit_line("  (local.set $digit (i32.rem_u (local.get $temp) (i32.const 10)))");
+        self.emit_line("  (local.set $temp (i32.div_u (local.get $temp) (i32.const 10)))");
+        self.emit_line("  (i32.store8 (i32.add (local.get $ptr) (local.get $len)) (i32.add (local.get $digit) (i32.const 48)))");
+        self.emit_line("  (local.set $len (i32.add (local.get $len) (i32.const 1)))");
+        self.emit_line("  (br_if $digit_loop (i32.ne (local.get $temp) (i32.const 0)))");
+        self.emit_line(")");
+        
+        // Reverse the digits (they were stored backwards)
+        self.emit_line("(local.set $start (local.get $start))");
+        self.emit_line("(local.set $end (i32.sub (local.get $len) (i32.const 1)))");
+        self.emit_line("(loop $reverse_loop");
+        self.emit_line("  (br_if 1 (i32.ge_u (local.get $start) (local.get $end)))");
+        self.emit_line("  (local.set $char (i32.load8_u (i32.add (local.get $ptr) (local.get $start))))");
+        self.emit_line("  (i32.store8 (i32.add (local.get $ptr) (local.get $start)) (i32.load8_u (i32.add (local.get $ptr) (local.get $end))))");
+        self.emit_line("  (i32.store8 (i32.add (local.get $ptr) (local.get $end)) (local.get $char))");
+        self.emit_line("  (local.set $start (i32.add (local.get $start) (i32.const 1)))");
+        self.emit_line("  (local.set $end (i32.sub (local.get $end) (i32.const 1)))");
+        self.emit_line("  (br $reverse_loop)");
+        self.emit_line(")");
+        
+        self.emit_line("(call $wasiWriteString (local.get $ptr) (local.get $len))");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        // Function to print booleans
+        self.emit_line("(func $wasiPrintBool (param $val i32)");
+        self.indent_level += 1;
+        self.emit_line("(if (local.get $val)");
+        self.emit_line("  (then (call $wasiWriteString (i32.const 512) (i32.const 4)))");  
+        self.emit_line("  (else (call $wasiWriteString (i32.const 516) (i32.const 5)))");
+        self.emit_line(")");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        // Function to print strings
+        self.emit_line("(func $wasiPrintString (param $str (ref null $String))");
+        self.indent_level += 1;
+        self.emit_line("(local $len i32) (local $ptr i32) (local $i i32) (local $aligned_len i32)");
+        self.emit_line("(local.set $len (array.len (local.get $str)))");
+        self.emit_line("(local.set $ptr (global.get $memory_offset))");
+        
+        // Align the length to 4-byte boundary to maintain alignment for subsequent allocations
+        self.emit_line("(local.set $aligned_len (i32.and (i32.add (local.get $len) (i32.const 3)) (i32.const -4)))");
+        self.emit_line("(global.set $memory_offset (i32.add (global.get $memory_offset) (local.get $aligned_len)))");
+        
+        // Copy string to memory
+        self.emit_line("(local.set $i (i32.const 0))");
+        self.emit_line("(loop $copy_loop");
+        self.emit_line("  (br_if 1 (i32.ge_u (local.get $i) (local.get $len)))");
+        self.emit_line("  (i32.store8 (i32.add (local.get $ptr) (local.get $i))");
+        self.emit_line("    (array.get_u $String (local.get $str) (local.get $i)))");
+        self.emit_line("  (local.set $i (i32.add (local.get $i) (i32.const 1)))");
+        self.emit_line("  (br $copy_loop)");
+        self.emit_line(")");
+        
+        self.emit_line("(call $wasiWriteString (local.get $ptr) (local.get $len))");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        // Println variants
+        self.emit_line("(func $wasiPrintlnInt (param $val i32)");
+        self.indent_level += 1;
+        self.emit_line("(call $wasiPrintInt (local.get $val))");
+        self.emit_line("(call $wasiWriteString (i32.const 520) (i32.const 1))");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        self.emit_line("(func $wasiPrintlnBool (param $val i32)");
+        self.indent_level += 1;
+        self.emit_line("(call $wasiPrintBool (local.get $val))");
+        self.emit_line("(call $wasiWriteString (i32.const 520) (i32.const 1))");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        self.emit_line("(func $wasiPrintlnString (param $str (ref null $String))");
+        self.indent_level += 1;
+        self.emit_line("(call $wasiPrintString (local.get $str))");
+        self.emit_line("(call $wasiWriteString (i32.const 520) (i32.const 1))");
+        self.indent_level -= 1;
+        self.emit_line(")");
+        
+        // Store static strings in memory
+        self.emit_line("(data (i32.const 512) \"true\")");
+        self.emit_line("(data (i32.const 516) \"false\")");
+        self.emit_line("(data (i32.const 520) \"\\n\")");
+    }
 }
 
 #[cfg(test)]
@@ -918,7 +1112,7 @@ mod tests {
             }
         "#;
         let ast = parse(input);
-        let mut codegen = CodeGenerator::new();
+        let mut codegen = CodeGenerator::new(false);
         let wat = codegen.generate(ast);
         // wat::parse_str will error if the WAT is invalid
         parse_str(&wat).expect("Generated WAT should be valid");
@@ -940,7 +1134,7 @@ mod tests {
             }
         "#;
         let ast = parse(input);
-        let mut codegen = CodeGenerator::new();
+        let mut codegen = CodeGenerator::new(false);
         let wat = codegen.generate(ast);
         parse_str(&wat).expect("Generated WAT should be valid for class and method");
     }
@@ -958,7 +1152,7 @@ mod tests {
             }
         "#;
         let ast = parse(input);
-        let mut codegen = CodeGenerator::new();
+        let mut codegen = CodeGenerator::new(false);
         let wat = codegen.generate(ast);
         parse_str(&wat).expect("Generated WAT should be valid for if/else");
     }
@@ -975,7 +1169,7 @@ mod tests {
             }
         "#;
         let ast = parse(input);
-        let mut codegen = CodeGenerator::new();
+        let mut codegen = CodeGenerator::new(false);
         let wat = codegen.generate(ast);
         parse_str(&wat).expect("Generated WAT should be valid for while loop");
     }
@@ -1038,7 +1232,7 @@ mod tests {
             }
         "#;
         let ast = parse(input);
-        let mut codegen = CodeGenerator::new();
+        let mut codegen = CodeGenerator::new(false);
         let wat = codegen.generate(ast);
         parse_str(&wat).expect("Generated WAT should be valid for return statement");
     }
@@ -1055,7 +1249,7 @@ mod tests {
             }
         "#;
         let ast = parse(input);
-        let mut codegen = CodeGenerator::new();
+        let mut codegen = CodeGenerator::new(false);
         let wat = codegen.generate(ast);
         parse_str(&wat).expect("Generated WAT should be valid for function call");
     }
@@ -1104,7 +1298,7 @@ mod tests {
         use wasmtime::{Engine, Module, Store, Linker, Config};
         use std::sync::{Arc, Mutex};
         let ast = parse(input);
-        let mut codegen = CodeGenerator::new();
+        let mut codegen = CodeGenerator::new(false);
         let wat = codegen.generate(ast);
         eprintln!("{}", &wat);
         let wasm = wat::Parser::default().generate_dwarf(wat::GenerateDwarf::Lines).parse_str(None, &wat).expect("Generated WAT should be valid");

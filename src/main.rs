@@ -6,21 +6,43 @@ use codegen::CodeGenerator;
 use std::env;
 use std::fs;
 use std::process;
+use std::path::Path;
 
 use wasmtime::{Config, Engine, Linker, Module, Store, Caller, Rooted, ArrayRef};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     
-    if args.len() != 2 {
-        eprintln!("Usage: {} <source_file>", args[0]);
+    let mut wasi_mode = false;
+    let mut filename = String::new();
+    
+    // Parse command line arguments
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--wasi" => {
+                wasi_mode = true;
+                i += 1;
+            }
+            arg if !arg.starts_with('-') => {
+                filename = arg.to_string();
+                i += 1;
+            }
+            _ => {
+                eprintln!("Unknown argument: {}", args[i]);
+                eprintln!("Usage: {} [--wasi] <source_file>", args[0]);
+                process::exit(1);
+            }
+        }
+    }
+    
+    if filename.is_empty() {
+        eprintln!("Usage: {} [--wasi] <source_file>", args[0]);
         process::exit(1);
     }
     
-    let filename = &args[1];
-    
     // Read the source file
-    let input = match fs::read_to_string(filename) {
+    let input = match fs::read_to_string(&filename) {
         Ok(content) => content,
         Err(e) => {
             eprintln!("Error reading file '{}': {}", filename, e);
@@ -40,11 +62,26 @@ fn main() {
     };
     
     // Generate WASM
-                let mut codegen = CodeGenerator::new();
-            let wat_code = codegen.generate(ast);
+    let mut codegen = CodeGenerator::new(wasi_mode);
+    let wat_code = codegen.generate(ast);
     
-    // Convert WAT to WASM binary
-    let wasm_binary = match wat::parse_str(&wat_code) {
+    if wasi_mode {
+        // Output WAT file when using WASI mode
+        let output_filename = filename.replace(".lang", ".wat");
+        match fs::write(&output_filename, &wat_code) {
+            Ok(()) => {
+                println!("Generated WASI WAT file: {}", output_filename);
+            }
+            Err(e) => {
+                eprintln!("Error writing WAT file '{}': {}", output_filename, e);
+                process::exit(1);
+            }
+        }
+        return;
+    }
+    
+    // Convert WAT to WASM binary for non-WASI mode
+    let wasm_binary = match wat::Parser::default().generate_dwarf(wat::GenerateDwarf::Lines).parse_str(Some(Path::new(&filename)), &wat_code) {
         Ok(binary) => binary,
         Err(e) => {
             eprintln!("WAT compilation error: {}", e);
@@ -52,6 +89,7 @@ fn main() {
             process::exit(1);
         }
     };
+    eprintln!("{}", wat_code);
     
     // Execute the WASM
     match execute_wasm(&wasm_binary) {
