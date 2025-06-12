@@ -1,0 +1,77 @@
+class TreeNode {
+    TreeNode left;
+    TreeNode right;
+    
+    TreeNode bottomUpTree(int depth) {
+        if (depth > 0) {
+            TreeNode leftChild = this.bottomUpTree(depth - 1);
+            TreeNode rightChild = this.bottomUpTree(depth - 1);
+            TreeNode node = new TreeNode();
+            node.left = leftChild;
+            node.right = rightChild;
+            return node;
+        } else {
+            TreeNode node = new TreeNode();
+            node.left = null;
+            node.right = null;
+            return node;
+        }
+    }
+    
+    int itemCheck() {
+        if (this.left == null) {
+            return 1;
+        } else {
+            return 1 + this.left.itemCheck() + this.right.itemCheck();
+        }
+    }
+}
+
+void main() {
+    int minDepth = 4;
+    int n = 20;  // Increase n to make it more interesting
+    
+    int maxDepth;
+    if (minDepth + 2 > n) {
+        maxDepth = minDepth + 2;
+    } else {
+        maxDepth = n;
+    }
+    int stretchDepth = maxDepth + 1;
+    
+    TreeNode stretchTree = new TreeNode();
+    TreeNode temp = stretchTree.bottomUpTree(stretchDepth);
+    int check = temp.itemCheck();
+    print("stretch tree of depth ");
+    print(stretchDepth);
+    print(" check: ");
+    println(check);
+    
+    TreeNode longLivedTree = new TreeNode();
+    longLivedTree = longLivedTree.bottomUpTree(maxDepth);
+    
+    int depth = minDepth;
+    while (depth <= maxDepth) {
+        int iterations = 1 << (maxDepth - depth + minDepth);
+        check = 0;
+        
+        int i = 1;
+        while (i <= iterations) {
+            TreeNode tree = new TreeNode();
+            tree = tree.bottomUpTree(depth);
+            check = check + tree.itemCheck();
+            i = i + 1;
+        }
+        print(iterations);
+        print(" trees of depth ");
+        print(depth);
+        print(" check: ");
+        println(check);
+        depth = depth + 2;
+    }
+    
+    print("long lived tree of depth ");
+    print(maxDepth);
+    print(" check: ");
+    println(longLivedTree.itemCheck());
+}

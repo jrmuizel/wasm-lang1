@@ -195,7 +195,7 @@ fn execute_wasm(wasm_binary: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
 
 fn generate_browser_files(filename: &str, wat_code: &str) {
     // Generate .wasm file
-    let wasm_binary = match wat::Parser::default().generate_dwarf(wat::GenerateDwarf::Lines).parse_str(Some(Path::new(&filename)), &wat_code) {
+    let wasm_binary = match wat::Parser::default().parse_str(Some(Path::new(&filename)), &wat_code) {
         Ok(binary) => binary,
         Err(e) => {
             eprintln!("WAT compilation error: {}", e);
@@ -325,12 +325,20 @@ fn generate_html_template(wasm_filename: &str) -> String {
                 // Clear previous output
                 wasmInstance.exports.clearOutput();
                 
+                // Record start time
+                const startTime = performance.now();
+                
                 // Run the main function
                 wasmInstance.exports.main();
                 
+                // Record end time
+                const endTime = performance.now();
+                const executionTime = endTime - startTime;
+                
                 // Get the output and display it
                 const output = getOutput();
-                outputElement.textContent = output || '(no output)';
+                const timeInfo = `\\n\\n--- Execution completed in ${{executionTime.toFixed(3)}} ms ---`;
+                outputElement.textContent = (output || '(no output)') + timeInfo;
                 
             }} catch (error) {{
                 console.error('Error running program:', error);
