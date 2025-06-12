@@ -943,16 +943,10 @@ impl CodeGenerator {
         self.emit_line("(local $iovec_ptr i32)");
         self.emit_line("(local $nwritten_ptr i32)");
         
-        // Ensure current memory offset is 4-byte aligned
-        self.emit_line("(global.set $memory_offset");
-        self.emit_line("  (i32.and (i32.add (global.get $memory_offset) (i32.const 3)) (i32.const -4)))");
-        
-        // Allocate space for iovec structure (8 bytes) and nwritten (4 bytes)
-        self.emit_line("(local.set $iovec_ptr (global.get $memory_offset))");
-        self.emit_line("(local.set $nwritten_ptr (i32.add (local.get $iovec_ptr) (i32.const 8)))");
-        
-        // Update memory offset for next allocation
-        self.emit_line("(global.set $memory_offset (i32.add (local.get $nwritten_ptr) (i32.const 4)))");
+        // Use a safe memory region for WASI temporary structures
+        // This region is between static data (around 1KB) and dynamic allocation (starts at 1024)
+        self.emit_line("(local.set $iovec_ptr (i32.const 768))");
+        self.emit_line("(local.set $nwritten_ptr (i32.const 776))");
         
         // Set up iovec structure
         self.emit_line("(i32.store (local.get $iovec_ptr) (local.get $ptr))");
@@ -962,6 +956,7 @@ impl CodeGenerator {
         self.emit_line("(call $fd_write");
         self.emit_line("  (i32.const 1) (local.get $iovec_ptr) (i32.const 1) (local.get $nwritten_ptr))");
         self.emit_line("drop");
+        
         self.indent_level -= 1;
         self.emit_line(")");
         
@@ -970,9 +965,9 @@ impl CodeGenerator {
         self.indent_level += 1;
         self.emit_line("(local $ptr i32) (local $len i32) (local $temp i32) (local $digit i32) (local $is_negative i32) (local $start i32) (local $end i32) (local $char i32)");
         
-        // Allocate aligned memory for string buffer (12 bytes, already 4-byte aligned)
-        self.emit_line("(local.set $ptr (global.get $memory_offset))");
-        self.emit_line("(global.set $memory_offset (i32.add (global.get $memory_offset) (i32.const 12)))");
+        // Use a fixed memory region for integer conversion to avoid memory corruption
+        // This region starts at 2560 (well above string buffer at 2048) and allows 12 bytes for integer conversion
+        self.emit_line("(local.set $ptr (i32.const 2560))");
         
         // Handle zero
         self.emit_line("(if (i32.eqz (local.get $val))");
@@ -1006,17 +1001,18 @@ impl CodeGenerator {
         self.emit_line("  (br_if $digit_loop (i32.ne (local.get $temp) (i32.const 0)))");
         self.emit_line(")");
         
-        // Reverse the digits (they were stored backwards)
-        self.emit_line("(local.set $start (local.get $start))");
+        // Simple reversal without infinite loop  
         self.emit_line("(local.set $end (i32.sub (local.get $len) (i32.const 1)))");
-        self.emit_line("(loop $reverse_loop");
-        self.emit_line("  (br_if 1 (i32.ge_u (local.get $start) (local.get $end)))");
-        self.emit_line("  (local.set $char (i32.load8_u (i32.add (local.get $ptr) (local.get $start))))");
-        self.emit_line("  (i32.store8 (i32.add (local.get $ptr) (local.get $start)) (i32.load8_u (i32.add (local.get $ptr) (local.get $end))))");
-        self.emit_line("  (i32.store8 (i32.add (local.get $ptr) (local.get $end)) (local.get $char))");
-        self.emit_line("  (local.set $start (i32.add (local.get $start) (i32.const 1)))");
-        self.emit_line("  (local.set $end (i32.sub (local.get $end) (i32.const 1)))");
-        self.emit_line("  (br $reverse_loop)");
+        self.emit_line("(block $reverse_done");
+        self.emit_line("  (loop $reverse_loop");
+        self.emit_line("    (br_if $reverse_done (i32.ge_u (local.get $start) (local.get $end)))");
+        self.emit_line("    (local.set $char (i32.load8_u (i32.add (local.get $ptr) (local.get $start))))");
+        self.emit_line("    (i32.store8 (i32.add (local.get $ptr) (local.get $start)) (i32.load8_u (i32.add (local.get $ptr) (local.get $end))))");
+        self.emit_line("    (i32.store8 (i32.add (local.get $ptr) (local.get $end)) (local.get $char))");
+        self.emit_line("    (local.set $start (i32.add (local.get $start) (i32.const 1)))");
+        self.emit_line("    (local.set $end (i32.sub (local.get $end) (i32.const 1)))");
+        self.emit_line("    (br $reverse_loop)");
+        self.emit_line("  )");
         self.emit_line(")");
         
         self.emit_line("(call $wasiWriteString (local.get $ptr) (local.get $len))");
@@ -1037,12 +1033,17 @@ impl CodeGenerator {
         self.emit_line("(func $wasiPrintString (param $str (ref null $String))");
         self.indent_level += 1;
         self.emit_line("(local $len i32) (local $ptr i32) (local $i i32) (local $aligned_len i32)");
-        self.emit_line("(local.set $len (array.len (local.get $str)))");
-        self.emit_line("(local.set $ptr (global.get $memory_offset))");
         
-        // Align the length to 4-byte boundary to maintain alignment for subsequent allocations
-        self.emit_line("(local.set $aligned_len (i32.and (i32.add (local.get $len) (i32.const 3)) (i32.const -4)))");
-        self.emit_line("(global.set $memory_offset (i32.add (global.get $memory_offset) (local.get $aligned_len)))");
+        // Check for null reference
+        self.emit_line("(if (ref.is_null (local.get $str))");
+        self.emit_line("  (then (return))");
+        self.emit_line(")");
+        
+        self.emit_line("(local.set $len (array.len (local.get $str)))");
+        
+        // Use a fixed memory region for string copying to avoid memory corruption
+        // This region starts at 2048 (well above the default memory_offset at 1024) and allows up to 512 bytes for string content
+        self.emit_line("(local.set $ptr (i32.const 2048))");
         
         // Copy string to memory
         self.emit_line("(local.set $i (i32.const 0))");
