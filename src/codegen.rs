@@ -1120,28 +1120,28 @@ impl CodeGenerator {
         self.emit_line("(func $wasiPrintlnInt (param $val i32)");
         self.indent_level += 1;
         self.emit_line("(call $wasiPrintInt (local.get $val))");
-        self.emit_line("(call $wasiWriteString (i32.const 520) (i32.const 1))");
+        self.emit_line("(call $wasiWriteString (i32.const 521) (i32.const 1))");
         self.indent_level -= 1;
         self.emit_line(")");
         
         self.emit_line("(func $wasiPrintlnBool (param $val i32)");
         self.indent_level += 1;
         self.emit_line("(call $wasiPrintBool (local.get $val))");
-        self.emit_line("(call $wasiWriteString (i32.const 520) (i32.const 1))");
+        self.emit_line("(call $wasiWriteString (i32.const 521) (i32.const 1))");
         self.indent_level -= 1;
         self.emit_line(")");
         
         self.emit_line("(func $wasiPrintlnString (param $str (ref null $String))");
         self.indent_level += 1;
         self.emit_line("(call $wasiPrintString (local.get $str))");
-        self.emit_line("(call $wasiWriteString (i32.const 520) (i32.const 1))");
+        self.emit_line("(call $wasiWriteString (i32.const 521) (i32.const 1))");
         self.indent_level -= 1;
         self.emit_line(")");
         
         // Store static strings in memory
         self.emit_line("(data (i32.const 512) \"true\")");
         self.emit_line("(data (i32.const 516) \"false\")");
-        self.emit_line("(data (i32.const 520) \"\\n\")");
+        self.emit_line("(data (i32.const 521) \"\\n\")");
     }
 
     fn generate_browser_helper_functions(&mut self) {
@@ -1248,21 +1248,21 @@ impl CodeGenerator {
         self.emit_line("(func $browserPrintlnInt (param $val i32)");
         self.indent_level += 1;
         self.emit_line("(call $browserPrintInt (local.get $val))");
-        self.emit_line("(call $browserWriteToOutput (i32.const 520) (i32.const 1))");
+        self.emit_line("(call $browserWriteToOutput (i32.const 521) (i32.const 1))");
         self.indent_level -= 1;
         self.emit_line(")");
         
         self.emit_line("(func $browserPrintlnBool (param $val i32)");
         self.indent_level += 1;
         self.emit_line("(call $browserPrintBool (local.get $val))");
-        self.emit_line("(call $browserWriteToOutput (i32.const 520) (i32.const 1))");
+        self.emit_line("(call $browserWriteToOutput (i32.const 521) (i32.const 1))");
         self.indent_level -= 1;
         self.emit_line(")");
         
         self.emit_line("(func $browserPrintlnString (param $str (ref null $String))");
         self.indent_level += 1;
         self.emit_line("(call $browserPrintString (local.get $str))");
-        self.emit_line("(call $browserWriteToOutput (i32.const 520) (i32.const 1))");
+        self.emit_line("(call $browserWriteToOutput (i32.const 521) (i32.const 1))");
         self.indent_level -= 1;
         self.emit_line(")");
 
@@ -1322,7 +1322,7 @@ impl CodeGenerator {
         // Store static strings in memory
         self.emit_line("(data (i32.const 512) \"true\")");
         self.emit_line("(data (i32.const 516) \"false\")");
-        self.emit_line("(data (i32.const 520) \"\\n\")");
+        self.emit_line("(data (i32.const 521) \"\\n\")");
     }
 }
 
